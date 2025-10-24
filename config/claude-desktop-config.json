@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "d365bc-admin": {
+      "command": "d365bc-admin-mcp"
+    }
+  }
+}

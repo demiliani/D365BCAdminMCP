@@ -1,0 +1,53 @@
+# Ignore build outputs
+build/
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+
+# Ignore npm and node modules
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Ignore IDE files
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Ignore user-specific config
+config/user-config.json
+*.local.json
+
+# Ignore test results
+TestResults/
+*.trx
+
+# Ignore published output
+publish/
+dist/
+
+# Keep structure folders
+!src/
+!scripts/
+!docs/
+!examples/
+!config/
+
+# Allow specific config examples
+!config/claude-desktop-config.json
+!config/cursor-config.json
+!config/copilot-config.json

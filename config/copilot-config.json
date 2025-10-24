@@ -1,0 +1,7 @@
+{
+  "github.copilot.chat.mcp.servers": {
+    "d365bc-admin": {
+      "command": "d365bc-admin-mcp"
+    }
+  }
+}

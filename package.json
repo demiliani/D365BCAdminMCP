@@ -1,0 +1,43 @@
+{
+  "name": "@demiliani/d365bc-admin-mcp",
+  "version": "1.0.1",
+  "description": "MCP Server for Dynamics 365 Business Central Administration",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "dynamics-365",
+    "business-central",
+    "d365bc",
+    "admin",
+    "api"
+  ],
+  "author": "Stefano Demiliani",
+  "license": "MIT",
+  "bin": {
+    "d365bc-admin-mcp": "./bin/d365bc-admin-mcp.js"
+  },
+  "files": [
+    "bin/",
+    "build/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "preinstall": "node scripts/check-dotnet.js",
+    "postinstall": "node scripts/build-dotnet.js",
+    "build": "node scripts/build-dotnet.js",
+    "test": "node bin/d365bc-admin-mcp.js --version"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "preferGlobal": true,
+  "publishConfig": {
+    "access": "public"
+  }
+}
