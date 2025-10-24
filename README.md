@@ -198,9 +198,9 @@ The MCP server exposes 26 administrative tools organized by category:
 
 | Tool | Description |
 |------|-------------|
-| `get_environment_notification_recipient` | List notification recipients |
-| `create_environment_notification_recipient` | Add a new notification recipient |
-| `delete_environment_notification_recipient` | Remove a notification recipient |
+| `get_notification_recipients` | List notification recipients |
+| `create_notification_recipient` | Add a new notification recipient |
+| `delete_notification_recipient` | Remove a notification recipient |
 
 ### 🔧 Feature Management (1 tool)
 

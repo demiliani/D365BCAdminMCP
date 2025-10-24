@@ -233,7 +233,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Sets the Application Insights connection string for a specific Business Central environment.")]
-    public static async Task<string> set_environment_application_insights_connection_string(
+    public static async Task<string> set_app_insights_key(
         [Description("The tenant ID (GUID) for which to set Application Insights connection string")] Guid tenantId,
         [Description("The name of the environment to set Application Insights connection string for")] string environmentName,
         [Description("The Application Insights connection string/key to set")] string appInsightsKey)
@@ -284,7 +284,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Gets storage usage information for a specific Business Central environment.")]
-    public static async Task<string> get_usage_storage_for_environment(
+    public static async Task<string> get_environment_storage_usage(
         [Description("The tenant ID (GUID) for which to get storage usage")] Guid tenantId,
         [Description("The name of the environment to get storage usage for")] string environmentName)
     {
@@ -301,7 +301,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Gets storage usage information for all Business Central environments in the tenant.")]
-    public static async Task<string> get_usage_storage_for_all_environments(
+    public static async Task<string> get_all_environments_storage_usage(
         [Description("The tenant ID (GUID) for which to get storage usage for all environments")] Guid tenantId)
     {
         var accessToken = await get_microsoft_entra_id_token(tenantId);
@@ -317,7 +317,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Gets information about available updates for a specific Business Central environment.")]
-    public static async Task<string> get_environment_updates(
+    public static async Task<string> get_available_environment_updates(
         [Description("The tenant ID (GUID) for which to get environment updates")] Guid tenantId,
         [Description("The name of the environment to get updates for")] string environmentName)
     {
@@ -334,7 +334,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Sets or schedules an update for a specific Business Central environment and target version.")]
-    public static async Task<string> set_environment_update(
+    public static async Task<string> schedule_environment_update(
         [Description("The tenant ID (GUID) for which to set the environment update")] Guid tenantId,
         [Description("The name of the environment to update")] string environmentName,
         [Description("The target version to schedule (e.g., '26.1')")] string targetVersion,
@@ -404,7 +404,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Gets a list of notification recipients configured for Business Central environments.")]
-    public static async Task<string> get_environment_notification_recipient(
+    public static async Task<string> get_notification_recipients(
         [Description("The tenant ID (GUID) for which to get notification recipients")] Guid tenantId)
     {
         var accessToken = await get_microsoft_entra_id_token(tenantId);
@@ -420,7 +420,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Creates a new notification recipient for Business Central environments.")]
-    public static async Task<string> create_environment_notification_recipient(
+    public static async Task<string> create_notification_recipient(
         [Description("The tenant ID (GUID) for which to create the notification recipient")] Guid tenantId,
         [Description("The email address of the notification recipient")] string email,
         [Description("The full name of the notification recipient")] string name)
@@ -438,7 +438,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Deletes a notification recipient for Business Central environments.")]
-    public static async Task<string> delete_environment_notification_recipient(
+    public static async Task<string> delete_notification_recipient(
         [Description("The tenant ID (GUID) for which to delete the notification recipient")] Guid tenantId,
         [Description("The unique identifier of the notification recipient to delete")] Guid recipientId)
     {
@@ -600,7 +600,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Gets a list of companies available in a specific Business Central environment.")]
-    public static async Task<string> get_environment_companies(
+    public static async Task<string> get_companies(
         [Description("The tenant ID (GUID) for which to get environment companies")] Guid tenantId,
         [Description("The name of the environment to get companies for")] string environmentName)
     {
