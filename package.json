@@ -1,6 +1,6 @@
 {
   "name": "@demiliani/d365bc-admin-mcp",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "MCP Server for Dynamics 365 Business Central Administration",
   "keywords": [
     "mcp",

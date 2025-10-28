@@ -599,6 +599,64 @@ public class D365BCAdminService
         return JsonSerializer.Serialize(new { error = "Unable to retrieve available features" });
     }
 
+    [McpServerTool, Description("Activates a feature in a Business Central environment.")]
+    public static async Task<string> activate_feature(
+        [Description("The tenant ID (GUID) for which to activate the feature")] Guid tenantId,
+        [Description("The name of the environment to activate the feature in")] string environmentName,
+        [Description("The company ID (GUID) for the company within the environment")] Guid companyId,
+        [Description("The feature ID (string) to activate")] string featureId,
+        [Description("Optional: Whether the feature activation should occur in the background (default: true)")] bool updateInBackground = true,
+        [Description("Optional: The date and time when the feature activation should commence in ISO 8601 format (default: current UTC time)")] DateTime? startDateTime = null)
+    {
+        var accessToken = await get_microsoft_entra_id_token(tenantId);
+        var d365bcAdminService = new D365BCAdminService(accessToken);
+        var result = await d365bcAdminService.activateFeature(tenantId, environmentName, companyId, featureId, updateInBackground, startDateTime);
+
+        if (result)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = true,
+                message = $"Feature {featureId} activation initiated successfully",
+                featureId = featureId,
+                updateInBackground = updateInBackground,
+                startDateTime = startDateTime ?? DateTime.UtcNow
+            });
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            success = false,
+            error = "Unable to activate feature"
+        });
+    }
+    
+    [McpServerTool, Description("Deactivates a feature in a Business Central environment.")]
+    public static async Task<string> deactivate_feature(
+        [Description("The tenant ID (GUID) for which to deactivate the feature")] Guid tenantId,
+        [Description("The name of the environment to deactivate the feature in")] string environmentName,
+        [Description("The company ID (GUID) for the company within the environment")] Guid companyId,
+        [Description("The feature ID (string) to deactivate")] string featureId)
+    {
+        var accessToken = await get_microsoft_entra_id_token(tenantId);
+        var d365bcAdminService = new D365BCAdminService(accessToken);
+        var result = await d365bcAdminService.deactivateFeature(tenantId, environmentName, companyId, featureId);
+
+        if (result)
+        {
+            return JsonSerializer.Serialize(new { 
+                success = true, 
+                message = $"Feature {featureId} deactivation initiated successfully",
+                featureId = featureId
+            });
+        }
+
+        return JsonSerializer.Serialize(new { 
+            success = false, 
+            error = "Unable to deactivate feature" 
+        });
+    }
+
     [McpServerTool, Description("Gets a list of companies available in a specific Business Central environment.")]
     public static async Task<string> get_companies(
         [Description("The tenant ID (GUID) for which to get environment companies")] Guid tenantId,
@@ -1133,24 +1191,24 @@ public class D365BCAdminService
     public async Task<List<Feature>?> getAvailableFeatures(Guid tenantId, string environmentName, Guid companyId)
     {
         await EnsureAuthenticated(tenantId);
-        
+
         // Using the confirmed correct API endpoint
         var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/features";
-        
+
         Console.WriteLine($"🔍 [DEBUG] Making Automation API request to: {url}");
         Console.WriteLine($"🔍 [DEBUG] Using token: {httpClient.DefaultRequestHeaders.Authorization?.Parameter?.Substring(0, 50)}...");
-        
+
         try
         {
             var response = await httpClient.GetAsync(url);
             Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
             Console.WriteLine($"🔍 [DEBUG] Response headers: {string.Join(", ", response.Headers.Select(h => $"{h.Key}: {string.Join(", ", h.Value)}"))}");
-            
+
             if (response.IsSuccessStatusCode)
             {
                 var responseContent = await response.Content.ReadAsStringAsync();
                 Console.WriteLine($"🔍 [DEBUG] Success! Response content: {responseContent}");
-                
+
                 var featuresResponse = await response.Content.ReadFromJsonAsync(FeaturesResponseContext.Default.FeaturesResponse);
 
                 if (featuresResponse?.Value != null)
@@ -1173,6 +1231,98 @@ public class D365BCAdminService
 
         return null;
     }
+
+    public async Task<bool> activateFeature(Guid tenantId, string environmentName, Guid companyId, string featureId, bool updateInBackground = true, DateTime? startDateTime = null)
+    {
+        await EnsureAuthenticated(tenantId);
+
+        // API endpoint for feature activation - featureId must be wrapped in single quotes
+        var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/features('{featureId}')/Microsoft.NAV.activate";
+
+        Console.WriteLine($"🔍 [DEBUG] Activating feature {featureId} at: {url}");
+        Console.WriteLine($"🔍 [DEBUG] Using token: {httpClient.DefaultRequestHeaders.Authorization?.Parameter?.Substring(0, 50)}...");
+
+        // Prepare request body
+        var requestBody = new
+        {
+            updateInBackground = updateInBackground,
+            startDateTime = (startDateTime ?? DateTime.UtcNow).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        };
+
+        var jsonContent = JsonSerializer.Serialize(requestBody);
+        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
+
+        Console.WriteLine($"🔍 [DEBUG] Request body: {jsonContent}");
+
+        try
+        {
+            var response = await httpClient.PostAsync(url, content);
+            Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
+
+            if (response.IsSuccessStatusCode)
+            {
+                var responseContent = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"✅ [DEBUG] Feature activation initiated successfully");
+                Console.WriteLine($"🔍 [DEBUG] Response content: {responseContent}");
+                return true;
+            }
+            else
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"❌ [DEBUG] HTTP {response.StatusCode} Error response: {errorContent}");
+                Console.WriteLine($"❌ [DEBUG] Response reason phrase: {response.ReasonPhrase}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [DEBUG] Exception in activateFeature: {ex.Message}");
+            Console.WriteLine($"❌ [DEBUG] Full exception: {ex}");
+        }
+
+        return false;
+    }
+    
+    public async Task<bool> deactivateFeature(Guid tenantId, string environmentName, Guid companyId, string featureId)
+    {
+        await EnsureAuthenticated(tenantId);
+        
+        // API endpoint for feature deactivation - featureId must be wrapped in single quotes
+        var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/features('{featureId}')/Microsoft.NAV.deactivate";
+        
+        Console.WriteLine($"🔍 [DEBUG] Deactivating feature {featureId} at: {url}");
+        Console.WriteLine($"🔍 [DEBUG] Using token: {httpClient.DefaultRequestHeaders.Authorization?.Parameter?.Substring(0, 50)}...");
+        
+        // Empty request body for deactivation
+        var content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+        
+        try
+        {
+            var response = await httpClient.PostAsync(url, content);
+            Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
+            
+            if (response.IsSuccessStatusCode)
+            {
+                var responseContent = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"✅ [DEBUG] Feature deactivation initiated successfully");
+                Console.WriteLine($"🔍 [DEBUG] Response content: {responseContent}");
+                return true;
+            }
+            else
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"❌ [DEBUG] HTTP {response.StatusCode} Error response: {errorContent}");
+                Console.WriteLine($"❌ [DEBUG] Response reason phrase: {response.ReasonPhrase}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [DEBUG] Exception in deactivateFeature: {ex.Message}");
+            Console.WriteLine($"❌ [DEBUG] Full exception: {ex}");
+        }
+
+        return false;
+    }
+
 
     public async Task<List<Company>?> getEnvironmentCompanies(string environmentName)
     {

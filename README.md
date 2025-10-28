@@ -5,7 +5,7 @@ A Model Context Protocol (MCP) server that enables AI assistants like Claude Des
 ## 🌟 Features
 
 - 🔐 **Interactive Authentication** - Secure Microsoft Entra ID authentication with browser-based login
-- 📦 **26 Administrative Tools** - Complete environment, app, and session management
+- 📦 **28 Administrative Tools** - Complete environment, app, and session management
 - ⚡ **Smart Token Caching** - Automatic token refresh to minimize authentication prompts
 - 🌍 **Multi-Tenant Support** - Manage multiple Business Central tenants seamlessly
 - 💬 **Natural Language Interface** - Control BC through conversational AI commands
@@ -144,9 +144,9 @@ Once configured, use natural language commands in your AI assistant:
 "What's the storage usage for Production?"
 ```
 
-## 🛠️ Available Tools (26 Total)
+## 🛠️ Available Tools (28 Total)
 
-The MCP server exposes 26 administrative tools organized by category:
+The MCP server exposes 28 administrative tools organized by category:
 
 ### 🔑 Authentication & Tenant Management (3 tools)
 
@@ -202,11 +202,13 @@ The MCP server exposes 26 administrative tools organized by category:
 | `create_notification_recipient` | Add a new notification recipient |
 | `delete_notification_recipient` | Remove a notification recipient |
 
-### 🔧 Feature Management (1 tool)
+### 🔧 Feature Management (3 tools)
 
 | Tool | Description |
 |------|-------------|
 | `get_available_features` | List available features in an environment |
+| `activate_feature` | Activate a feature in a Business Central environment |
+| `deactivate_feature` | Deactivate a feature in a Business Central environment |
 
 ### 🧹 Token Management (1 tool)
 
