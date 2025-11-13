@@ -29,6 +29,15 @@ function getCurrentRuntimeId() {
 try {
   const rid = getCurrentRuntimeId();
   const buildOutput = path.join(outputDir, rid);
+  const exeName = rid.startsWith('win') ? 'D365BCAdminMCP.exe' : 'D365BCAdminMCP';
+  const exePath = path.join(buildOutput, exeName);
+  
+  // Check if executable already exists
+  if (fs.existsSync(exePath)) {
+    console.log(`✅ Platform-specific executable already exists: ${rid}`);
+    console.log(`📂 Using: ${exePath}`);
+    process.exit(0);
+  }
   
   console.log(`📦 Building for ${rid}...`);
   
@@ -56,5 +65,8 @@ try {
   console.error('  1. .NET SDK 9.0 or higher is installed');
   console.error('  2. All dependencies are available');
   console.error('  3. The project builds successfully with: dotnet build');
+  console.error('');
+  console.error('If you are installing from npm, pre-built binaries should be included.');
+  console.error('This build step should only be needed for development.');
   process.exit(1);
 }

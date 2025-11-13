@@ -1,6 +1,6 @@
 {
   "name": "@demiliani/d365bc-admin-mcp",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "MCP Server for Dynamics 365 Business Central Administration",
   "keywords": [
     "mcp",
@@ -26,15 +26,16 @@
   },
   "files": [
     "bin/",
-    "build/",
-    "scripts/",
-    "src/",
+    "build/win-x64/D365BCAdminMCP.exe",
+    "build/linux-x64/D365BCAdminMCP",
+    "build/osx-arm64/D365BCAdminMCP",
+    "scripts/build-dotnet.js",
+    "scripts/check-dotnet.js",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "preinstall": "node scripts/check-dotnet.js",
-    "postinstall": "node scripts/build-dotnet.js",
+    "postinstall": "node scripts/build-dotnet.js || echo 'Warning: Build skipped. Using pre-built binaries.'",
     "build": "node scripts/build-dotnet.js",
     "test": "node bin/d365bc-admin-mcp.js --version"
   },
