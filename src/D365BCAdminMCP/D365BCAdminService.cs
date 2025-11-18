@@ -283,6 +283,23 @@ public class D365BCAdminService
         return JsonSerializer.Serialize(new { error = "Unable to copy environment" });
     }
 
+    [McpServerTool, Description("Deletes a Business Central environment. Returns HTTP 202 (Accepted) and initiates an asynchronous deletion operation.")]
+    public static async Task<string> delete_environment(
+        [Description("The tenant ID (GUID) for which to delete the environment")] Guid tenantId,
+        [Description("The name of the environment to delete")] string environmentName)
+    {
+        var accessToken = await get_microsoft_entra_id_token(tenantId);
+        var d365bcAdminService = new D365BCAdminService(accessToken);
+        var deletionResponse = await d365bcAdminService.deleteEnvironment(environmentName);
+
+        if (deletionResponse != null)
+        {
+            return JsonSerializer.Serialize(deletionResponse);
+        }
+
+        return JsonSerializer.Serialize(new { error = "Unable to delete environment" });
+    }
+
     [McpServerTool, Description("Gets storage usage information for a specific Business Central environment.")]
     public static async Task<string> get_environment_storage_usage(
         [Description("The tenant ID (GUID) for which to get storage usage")] Guid tenantId,
@@ -1395,6 +1412,22 @@ public class D365BCAdminService
             {
                 return operationsResponse.Value;
             }
+        }
+
+        return null;
+    }
+
+    public async Task<EnvironmentDeletionResponse?> deleteEnvironment(string environmentName)
+    {
+        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}";
+        
+        var response = await httpClient.DeleteAsync(url);
+
+        // The API returns 202 (Accepted) for successful deletion initiation
+        if (response.StatusCode == System.Net.HttpStatusCode.Accepted || response.IsSuccessStatusCode)
+        {
+            var deletionResponse = await response.Content.ReadFromJsonAsync(EnvironmentDeletionResponseContext.Default.EnvironmentDeletionResponse);
+            return deletionResponse;
         }
 
         return null;

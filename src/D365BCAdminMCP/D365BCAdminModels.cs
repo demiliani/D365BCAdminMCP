@@ -201,6 +201,65 @@ internal sealed partial class EnvironmentCreationResponseContext : JsonSerialize
 
 }
 
+public class EnvironmentDeletionParameters
+{
+    [JsonPropertyName("softDeletedOn")]
+    public string? SoftDeletedOn { get; set; }
+    
+    [JsonPropertyName("hardDeletePendingOn")]
+    public string? HardDeletePendingOn { get; set; }
+    
+    [JsonPropertyName("deleteReason")]
+    public string? DeleteReason { get; set; }
+}
+
+public class EnvironmentDeletionResponse
+{
+    [JsonPropertyName("id")]
+    public string? Id { get; set; }
+    
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+    
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+    
+    [JsonPropertyName("aadTenantId")]
+    public string? AadTenantId { get; set; }
+    
+    [JsonPropertyName("createdOn")]
+    public DateTime? CreatedOn { get; set; }
+    
+    [JsonPropertyName("startedOn")]
+    public DateTime? StartedOn { get; set; }
+    
+    [JsonPropertyName("completedOn")]
+    public DateTime? CompletedOn { get; set; }
+    
+    [JsonPropertyName("createdBy")]
+    public string? CreatedBy { get; set; }
+    
+    [JsonPropertyName("errorMessage")]
+    public string? ErrorMessage { get; set; }
+    
+    [JsonPropertyName("parameters")]
+    public EnvironmentDeletionParameters? Parameters { get; set; }
+    
+    [JsonPropertyName("environmentName")]
+    public string? EnvironmentName { get; set; }
+    
+    [JsonPropertyName("environmentType")]
+    public string? EnvironmentType { get; set; }
+    
+    [JsonPropertyName("productFamily")]
+    public string? ProductFamily { get; set; }
+}
+
+[JsonSerializable(typeof(EnvironmentDeletionResponse))]
+internal sealed partial class EnvironmentDeletionResponseContext : JsonSerializerContext {
+
+}
+
 public class EnvironmentStorageUsage
 {
     [JsonPropertyName("environmentType")]

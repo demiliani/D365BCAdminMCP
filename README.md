@@ -5,7 +5,7 @@ A Model Context Protocol (MCP) server that enables AI assistants like Claude Des
 ## 🌟 Features
 
 - 🔐 **Interactive Authentication** - Secure Microsoft Entra ID authentication with browser-based login
-- 📦 **28 Administrative Tools** - Complete environment, app, and session management
+- 📦 **29 Administrative Tools** - Complete environment, app, and session management
 - ⚡ **Smart Token Caching** - Automatic token refresh to minimize authentication prompts
 - 🌍 **Multi-Tenant Support** - Manage multiple Business Central tenants seamlessly
 - 💬 **Natural Language Interface** - Control BC through conversational AI commands
@@ -116,6 +116,7 @@ Once configured, use natural language commands in your AI assistant:
 "What's the status of my Production environment?"
 "Create a new sandbox environment called 'Dev-Test' in the US"
 "Copy Production environment to a new sandbox called 'Testing'"
+"Delete the 'Old-Test' sandbox environment"
 ```
 
 ### Application Management
@@ -144,9 +145,9 @@ Once configured, use natural language commands in your AI assistant:
 "What's the storage usage for Production?"
 ```
 
-## 🛠️ Available Tools (28 Total)
+## 🛠️ Available Tools (29 Total)
 
-The MCP server exposes 28 administrative tools organized by category:
+The MCP server exposes 29 administrative tools organized by category:
 
 ### 🔑 Authentication & Tenant Management (3 tools)
 
@@ -156,13 +157,14 @@ The MCP server exposes 28 administrative tools organized by category:
 | `get_tenant_id_from_tenant_name` | Retrieve tenant ID from tenant name |
 | `get_token_cache_status` | View cached token status for all tenants |
 
-### 🌍 Environment Management (9 tools)
+### 🌍 Environment Management (10 tools)
 
 | Tool | Description |
 |------|-------------|
 | `get_environment_informations` | List all BC environments in a tenant |
 | `create_new_environment` | Create a new BC environment |
 | `copy_environment` | Copy an existing environment to create a new one |
+| `delete_environment` | Delete a Business Central environment |
 | `get_environment_update_window` | Get update window settings for an environment |
 | `set_environment_update_window` | Configure update window for an environment |
 | `set_app_insights_key` | Set Application Insights connection string |
