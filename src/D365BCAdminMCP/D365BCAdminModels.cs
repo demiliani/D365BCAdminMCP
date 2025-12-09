@@ -865,3 +865,103 @@ public class CompaniesResponse
 internal sealed partial class CompaniesResponseContext : JsonSerializerContext {
 
 }
+
+
+
+
+public class ExtensionDeploymentStatus
+{
+    [JsonPropertyName("operationID")]
+    public Guid? OperationID { get; set; }
+    
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+    
+    [JsonPropertyName("publisher")]
+    public string? Publisher { get; set; }
+    
+    [JsonPropertyName("operationType")]
+    public string? OperationType { get; set; }
+    
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+    
+    [JsonPropertyName("schedule")]
+    public string? Schedule { get; set; }
+    
+    [JsonPropertyName("appVersion")]
+    public string? AppVersion { get; set; }
+    
+    [JsonPropertyName("startedOn")]
+    public DateTime? StartedOn { get; set; }
+}
+
+public class ExtensionDeploymentStatusResponse
+{
+    [JsonPropertyName("@odata.context")]
+    public string? ODataContext { get; set; }
+    
+    [JsonPropertyName("value")]
+    public List<ExtensionDeploymentStatus>? Value { get; set; }
+}
+
+[JsonSerializable(typeof(ExtensionDeploymentStatusResponse))]
+internal sealed partial class ExtensionDeploymentStatusResponseContext : JsonSerializerContext {
+
+}
+
+public class ExtensionUploadRequest
+{
+    [JsonPropertyName("schedule")]
+    public string? Schedule { get; set; }
+    
+    [JsonPropertyName("schemaSyncMode")]
+    public string? SchemaSyncMode { get; set; }
+}
+
+public class ExtensionUploadResponse
+{
+    [JsonPropertyName("systemId")]
+    public string? SystemId { get; set; }
+    
+    [JsonPropertyName("schedule")]
+    public string? Schedule { get; set; }
+    
+    [JsonPropertyName("schemaSyncMode")]
+    public string? SchemaSyncMode { get; set; }
+    
+    [JsonPropertyName("extensionContent")]
+    public string? ExtensionContent { get; set; }
+    
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+}
+
+[JsonSerializable(typeof(ExtensionUploadRequest))]
+internal sealed partial class ExtensionUploadRequestContext : JsonSerializerContext {
+
+}
+
+[JsonSerializable(typeof(ExtensionUploadResponse))]
+internal sealed partial class ExtensionUploadResponseContext : JsonSerializerContext {
+
+}
+
+/// <summary>
+/// Result class for the createPteUpload operation combining extension upload creation and content upload
+/// </summary>
+public class PteUploadResult
+{
+    public bool Success { get; set; }
+    public string? Error { get; set; }
+    public string? ExtensionUploadId { get; set; }
+    public string? Schedule { get; set; }
+    public string? SchemaSyncMode { get; set; }
+    public string? AppName { get; set; }
+}
+
+[JsonSerializable(typeof(PteUploadResult))]
+internal sealed partial class PteUploadResultContext : JsonSerializerContext {
+
+}
+

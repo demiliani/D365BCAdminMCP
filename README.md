@@ -5,7 +5,7 @@ A Model Context Protocol (MCP) server that enables AI assistants like Claude Des
 ## 🌟 Features
 
 - 🔐 **Interactive Authentication** - Secure Microsoft Entra ID authentication with browser-based login
-- 📦 **29 Administrative Tools** - Complete environment, app, and session management
+- 📦 **33 Administrative Tools** - Complete environment, app, session, PTE upload, and extension management
 - ⚡ **Smart Token Caching** - Automatic token refresh to minimize authentication prompts
 - 🌍 **Multi-Tenant Support** - Manage multiple Business Central tenants seamlessly
 - 💬 **Natural Language Interface** - Control BC through conversational AI commands
@@ -25,7 +25,7 @@ npm install -g @demiliani/d365bc-admin-mcp
 - **Dynamics 365 Business Central** - Admin access to your tenant
 - **Microsoft Entra ID** - Azure account with BC admin privileges
 
-## �� Configuration
+## ⚙️ Configuration
 
 After installation, configure your AI assistant to use the MCP server.
 
@@ -145,17 +145,23 @@ Once configured, use natural language commands in your AI assistant:
 "What's the storage usage for Production?"
 ```
 
-## 🛠️ Available Tools (29 Total)
+### Extension Deployment & PTE Uploads
+```
+"Upload the app c:\\Packages\\MyPTE.app to Production (Fabrikam)"
+"Bulk upload all .app files from c:\\Packages into Sandbox and wait for deployments"
+"Check the extension deployment status for Fabrikam in Production"
+```
 
-The MCP server exposes 29 administrative tools organized by category:
+## 🛠️ Available Tools (33 Total)
 
-### 🔑 Authentication & Tenant Management (3 tools)
+The MCP server exposes 33 administrative tools organized by category:
+
+### 🔑 Authentication & Tenant Management (2 tools)
 
 | Tool | Description |
 |------|-------------|
 | `get_microsoft_entra_id_token` | Get authentication token with intelligent caching |
 | `get_tenant_id_from_tenant_name` | Retrieve tenant ID from tenant name |
-| `get_token_cache_status` | View cached token status for all tenants |
 
 ### 🌍 Environment Management (10 tools)
 
@@ -212,11 +218,21 @@ The MCP server exposes 29 administrative tools organized by category:
 | `activate_feature` | Activate a feature in a Business Central environment |
 | `deactivate_feature` | Deactivate a feature in a Business Central environment |
 
-### 🧹 Token Management (1 tool)
+### 🧩 Extension Deployment & PTE Uploads (4 tools)
+
+| Tool | Description |
+|------|-------------|
+| `get_extension_deployment_status` | Get extension deployment status for an environment/company |
+| `create_pte_upload` | Create and upload a single PTE (.app) file |
+| `create_pte_uploads_from_folder` | Bulk upload PTEs from a folder, waiting for each deployment |
+| `get_extension_upload` | Retrieve the status of a specific extension upload task |
+
+### 🧹 Token Management (2 tools)
 
 | Tool | Description |
 |------|-------------|
 | `clear_cached_token` | Clear cached authentication token for a tenant |
+| `get_token_cache_status` | View cached token status for all tenants |
 
 ## 🎯 Quick Start
 
@@ -271,7 +287,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **npm Package:** https://www.npmjs.com/package/@demiliani/d365bc-admin-mcp
 - **Issues:** Report bugs or request features via GitHub Issues
-- **Version:** 1.0.0
+- **Version:** 1.1.1
 
 ## 🙏 Acknowledgments
 

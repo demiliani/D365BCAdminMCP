@@ -10,6 +10,19 @@
     <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <Version>1.1.1</Version>
+    <PackageId>D365BCAdminMCP</PackageId>
+    <Title>Dynamics 365 Business Central Admin MCP Server</Title>
+    <Authors>Stefano Demiliani</Authors>
+    <Company>Stefano Demiliani</Company>
+    <Description>MCP server to administer Dynamics 365 Business Central via Model Context Protocol.</Description>
+    <PackageProjectUrl>https://github.com/demiliani/D365BCAdminMCP</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/demiliani/D365BCAdminMCP.git</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <IncludeSymbols>false</IncludeSymbols>
+    <PackageOutputPath>$(MSBuildThisFileDirectory)..\..\build\nuget</PackageOutputPath>
   </PropertyGroup>
 
   <ItemGroup>
