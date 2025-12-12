@@ -27,6 +27,18 @@ public class D365BCAdminService
         public bool IsExpired => DateTimeOffset.UtcNow >= ExpiresOn.AddMinutes(-5); // Refresh 5 minutes before expiry
     }
 
+    private static void CacheToken(Guid tenantId, string token, DateTimeOffset expiresOn)
+    {
+        lock (_tokenCacheLock)
+        {
+            _tokenCache[tenantId] = new CachedToken
+            {
+                Token = token,
+                ExpiresOn = expiresOn
+            };
+        }
+    }
+
     public D365BCAdminService()
     {
         this.httpClient = new HttpClient();
@@ -128,14 +140,7 @@ public class D365BCAdminService
             var tokenResult = await credential.GetTokenAsync(tokenRequestContext);
             
             // Cache the new token
-            lock (_tokenCacheLock)
-            {
-                _tokenCache[tenantId] = new CachedToken
-                {
-                    Token = tokenResult.Token,
-                    ExpiresOn = tokenResult.ExpiresOn
-                };
-            }
+            CacheToken(tenantId, tokenResult.Token, tokenResult.ExpiresOn);
             
             Console.WriteLine($"✅ [DEBUG] New token acquired and cached for tenant {tenantId}, expires: {tokenResult.ExpiresOn}");
             return tokenResult.Token;
@@ -147,17 +152,47 @@ public class D365BCAdminService
             var tokenResult = await interactiveCredential.GetTokenAsync(tokenRequestContext);
             
             // Cache the new token
-            lock (_tokenCacheLock)
-            {
-                _tokenCache[tenantId] = new CachedToken
-                {
-                    Token = tokenResult.Token,
-                    ExpiresOn = tokenResult.ExpiresOn
-                };
-            }
+            CacheToken(tenantId, tokenResult.Token, tokenResult.ExpiresOn);
             
             Console.WriteLine($"✅ [DEBUG] New token acquired via interactive auth and cached for tenant {tenantId}, expires: {tokenResult.ExpiresOn}");
             return tokenResult.Token;
+        }
+    }
+
+    [McpServerTool, Description("Forces an interactive browser login to refresh the cached Microsoft Entra token for a tenant.")]
+    public static async Task<string> force_interactive_auth([Description("The tenant ID (GUID) that requires a fresh interactive login")] Guid tenantId)
+    {
+        Console.WriteLine($"🧑‍💻 [DEBUG] Forcing interactive auth for tenant {tenantId}");
+
+        var tokenRequestContext = new TokenRequestContext(new[] { "https://api.businesscentral.dynamics.com/.default" });
+
+        try
+        {
+            var interactiveCredential = new InteractiveBrowserCredential(new InteractiveBrowserCredentialOptions { TenantId = tenantId.ToString() });
+            var tokenResult = await interactiveCredential.GetTokenAsync(tokenRequestContext);
+
+            CacheToken(tenantId, tokenResult.Token, tokenResult.ExpiresOn);
+
+            Console.WriteLine($"✅ [DEBUG] Interactive token acquired for tenant {tenantId}, expires: {tokenResult.ExpiresOn}");
+
+            return JsonSerializer.Serialize(new
+            {
+                success = true,
+                tenantId,
+                expiresOn = tokenResult.ExpiresOn,
+                cached = true
+            });
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [DEBUG] force_interactive_auth failed: {ex.Message}");
+
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                tenantId,
+                error = ex.Message
+            });
         }
     }
 
