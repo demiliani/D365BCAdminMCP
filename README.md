@@ -287,7 +287,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **npm Package:** https://www.npmjs.com/package/@demiliani/d365bc-admin-mcp
 - **Issues:** Report bugs or request features via GitHub Issues
-- **Version:** 1.1.1
+- **Version:** 1.1.2
 
 ## 🙏 Acknowledgments
 

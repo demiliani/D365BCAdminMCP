@@ -10,10 +10,12 @@ using Azure.Identity;
 namespace D365BCAdminMCP;
 
 [McpServerToolType]
-public class D365BCAdminService
+public class D365BCAdminService : IDisposable
 {
-    HttpClient httpClient;
+    // Static shared HttpClient for all instances (best practice to avoid socket exhaustion)
+    private static readonly HttpClient staticHttpClient = new HttpClient();
     private string? _accessToken;
+    private bool _disposed = false;
     
     // Static token cache for sharing across method calls
     private static readonly Dictionary<Guid, CachedToken> _tokenCache = new();
@@ -29,32 +31,50 @@ public class D365BCAdminService
 
     public D365BCAdminService()
     {
-        this.httpClient = new HttpClient();
+        // Don't create HttpClient per instance - use static shared client
     }
 
     public D365BCAdminService(string? accessToken) : this()
     {
         _accessToken = accessToken;
-
-        if (!string.IsNullOrEmpty(accessToken))
-        {
-            this.httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
-        }
+        // Don't set authorization on shared client - will use per-request headers
     }
 
     public void SetAccessToken(string accessToken)
     {
         _accessToken = accessToken;
-        this.httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+        // Don't set authorization on shared client - will use per-request headers
+    }
+
+    // Helper method to create authenticated requests
+    private HttpRequestMessage CreateAuthenticatedRequest(HttpMethod method, string url)
+    {
+        var request = new HttpRequestMessage(method, url);
+        if (!string.IsNullOrEmpty(_accessToken))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
+        }
+        return request;
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            // Don't dispose static HttpClient - it's shared across all instances
+            _disposed = true;
+        }
+        GC.SuppressFinalize(this);
     }
 
     private async Task EnsureAuthenticated(Guid tenantId)
     {
         Console.WriteLine($"🔍 [DEBUG] EnsureAuthenticated called with tenantId: {tenantId}");
         
-        if (httpClient.DefaultRequestHeaders.Authorization != null)
+        // Check if we already have a token set
+        if (!string.IsNullOrEmpty(_accessToken))
         {
-            Console.WriteLine($"🔍 [DEBUG] Already authenticated with token: {httpClient.DefaultRequestHeaders.Authorization.Parameter?.Substring(0, 50)}...");
+            Console.WriteLine($"🔍 [DEBUG] Already authenticated with existing access token");
             return; // Already authenticated
         }
 
@@ -68,8 +88,8 @@ public class D365BCAdminService
             Console.WriteLine($"🔍 [DEBUG] Token acquired successfully, length: {tokenResult.Token.Length}");
             Console.WriteLine($"🔍 [DEBUG] Token expires at: {tokenResult.ExpiresOn}");
             
-            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", tokenResult.Token);
-            Console.WriteLine($"🔍 [DEBUG] Authorization header set");
+            _accessToken = tokenResult.Token;
+            Console.WriteLine($"🔍 [DEBUG] Access token stored");
         }
         catch (Exception ex)
         {
@@ -233,7 +253,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Sets the Application Insights connection string for a specific Business Central environment.")]
-    public static async Task<string> set_app_insights_key(
+    public static async Task<string> set_environment_application_insights_connection_string(
         [Description("The tenant ID (GUID) for which to set Application Insights connection string")] Guid tenantId,
         [Description("The name of the environment to set Application Insights connection string for")] string environmentName,
         [Description("The Application Insights connection string/key to set")] string appInsightsKey)
@@ -283,7 +303,7 @@ public class D365BCAdminService
         return JsonSerializer.Serialize(new { error = "Unable to copy environment" });
     }
 
-    [McpServerTool, Description("Deletes a Business Central environment. Returns HTTP 202 (Accepted) and initiates an asynchronous deletion operation.")]
+    [McpServerTool, Description("Deletes a Business Central environment. Returns HTTP status code 202 (Accepted) with operation details. Expected errors: invalidStatusCannotDeleteTenant (can't delete in current state), tenantDeletionInProgress (already being deleted), ambiguousRequest (multiple environments with same name), environmentNotFound (environment not found).")]
     public static async Task<string> delete_environment(
         [Description("The tenant ID (GUID) for which to delete the environment")] Guid tenantId,
         [Description("The name of the environment to delete")] string environmentName)
@@ -301,7 +321,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Gets storage usage information for a specific Business Central environment.")]
-    public static async Task<string> get_environment_storage_usage(
+    public static async Task<string> get_usage_storage_for_environment(
         [Description("The tenant ID (GUID) for which to get storage usage")] Guid tenantId,
         [Description("The name of the environment to get storage usage for")] string environmentName)
     {
@@ -318,7 +338,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Gets storage usage information for all Business Central environments in the tenant.")]
-    public static async Task<string> get_all_environments_storage_usage(
+    public static async Task<string> get_usage_storage_for_all_environments(
         [Description("The tenant ID (GUID) for which to get storage usage for all environments")] Guid tenantId)
     {
         var accessToken = await get_microsoft_entra_id_token(tenantId);
@@ -334,7 +354,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Gets information about available updates for a specific Business Central environment.")]
-    public static async Task<string> get_available_environment_updates(
+    public static async Task<string> get_environment_updates(
         [Description("The tenant ID (GUID) for which to get environment updates")] Guid tenantId,
         [Description("The name of the environment to get updates for")] string environmentName)
     {
@@ -351,7 +371,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Sets or schedules an update for a specific Business Central environment and target version.")]
-    public static async Task<string> schedule_environment_update(
+    public static async Task<string> set_environment_update(
         [Description("The tenant ID (GUID) for which to set the environment update")] Guid tenantId,
         [Description("The name of the environment to update")] string environmentName,
         [Description("The target version to schedule (e.g., '26.1')")] string targetVersion,
@@ -421,7 +441,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Gets a list of notification recipients configured for Business Central environments.")]
-    public static async Task<string> get_notification_recipients(
+    public static async Task<string> get_environment_notification_recipient(
         [Description("The tenant ID (GUID) for which to get notification recipients")] Guid tenantId)
     {
         var accessToken = await get_microsoft_entra_id_token(tenantId);
@@ -437,7 +457,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Creates a new notification recipient for Business Central environments.")]
-    public static async Task<string> create_notification_recipient(
+    public static async Task<string> create_environment_notification_recipient(
         [Description("The tenant ID (GUID) for which to create the notification recipient")] Guid tenantId,
         [Description("The email address of the notification recipient")] string email,
         [Description("The full name of the notification recipient")] string name)
@@ -455,7 +475,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Deletes a notification recipient for Business Central environments.")]
-    public static async Task<string> delete_notification_recipient(
+    public static async Task<string> delete_environment_notification_recipient(
         [Description("The tenant ID (GUID) for which to delete the notification recipient")] Guid tenantId,
         [Description("The unique identifier of the notification recipient to delete")] Guid recipientId)
     {
@@ -631,9 +651,8 @@ public class D365BCAdminService
 
         if (result)
         {
-            return JsonSerializer.Serialize(new
-            {
-                success = true,
+            return JsonSerializer.Serialize(new { 
+                success = true, 
                 message = $"Feature {featureId} activation initiated successfully",
                 featureId = featureId,
                 updateInBackground = updateInBackground,
@@ -641,13 +660,12 @@ public class D365BCAdminService
             });
         }
 
-        return JsonSerializer.Serialize(new
-        {
-            success = false,
-            error = "Unable to activate feature"
+        return JsonSerializer.Serialize(new { 
+            success = false, 
+            error = "Unable to activate feature" 
         });
     }
-    
+
     [McpServerTool, Description("Deactivates a feature in a Business Central environment.")]
     public static async Task<string> deactivate_feature(
         [Description("The tenant ID (GUID) for which to deactivate the feature")] Guid tenantId,
@@ -675,7 +693,7 @@ public class D365BCAdminService
     }
 
     [McpServerTool, Description("Gets a list of companies available in a specific Business Central environment.")]
-    public static async Task<string> get_companies(
+    public static async Task<string> get_environment_companies(
         [Description("The tenant ID (GUID) for which to get environment companies")] Guid tenantId,
         [Description("The name of the environment to get companies for")] string environmentName)
     {
@@ -708,6 +726,32 @@ public class D365BCAdminService
 
         return JsonSerializer.Serialize(new { error = "Unable to retrieve extension deployment status" });
     }
+
+    // [McpServerTool, Description("Creates an extension upload task for a Business Central environment and company.")]
+    // public static async Task<string> create_extension_upload(
+    //     [Description("The tenant ID (GUID) for which to create the extension upload")] Guid tenantId,
+    //     [Description("The name of the environment to create extension upload for")] string environmentName,
+    //     [Description("The company ID (GUID) for the company within the environment")] Guid companyId,
+    //     [Description("The schedule for the extension upload (e.g., 'Current version', 'Next version')")] string schedule = "Current version",
+    //     [Description("The schema synchronization mode (e.g., 'Add', 'Force')")] string schemaSyncMode = "Add")
+    // {
+    //     var accessToken = await get_microsoft_entra_id_token(tenantId);
+    //     var d365bcAdminService = new D365BCAdminService(accessToken);
+    //     var uploadResponse = await d365bcAdminService.createExtensionUpload(tenantId, environmentName, companyId, schedule, schemaSyncMode);
+
+    //     if (uploadResponse != null)
+    //     {
+    //         return JsonSerializer.Serialize(new {
+    //             success = true,
+    //             extensionUploadId = uploadResponse.SystemId,
+    //             schedule = uploadResponse.Schedule,
+    //             schemaSyncMode = uploadResponse.SchemaSyncMode,
+    //             extensionContent = uploadResponse.ExtensionContent
+    //         });
+    //     }
+
+    //     return JsonSerializer.Serialize(new { success = false, error = "Unable to create extension upload" });
+    // }
 
     [McpServerTool, Description("Creates a Per-Tenant Extension (PTE) upload task and uploads the extension content (.app file) in a single operation.")]
     public static async Task<string> create_pte_upload(
@@ -870,6 +914,30 @@ public class D365BCAdminService
         return JsonSerializer.Serialize(new { success = false, error = "Unable to retrieve extension upload" });
     }
 
+    // [McpServerTool, Description("Uploads the extension content (.app file) for a Business Central extension upload task.")]
+    // public static async Task<string> upload_extension_content(
+    //     [Description("The tenant ID (GUID) for which to upload the extension content")] Guid tenantId,
+    //     [Description("The name of the environment")] string environmentName,
+    //     [Description("The company ID (GUID) for the company within the environment")] Guid companyId,
+    //     [Description("The extension upload ID (systemId) obtained from create_extension_upload")] string extensionUploadId,
+    //     [Description("The local file path to the .app file (e.g., c:\\TMP\\MyExtension_1.0.0.0.app)")] string appFilePath)
+    // {
+    //     var accessToken = await get_microsoft_entra_id_token(tenantId);
+    //     var d365bcAdminService = new D365BCAdminService(accessToken);
+    //     var result = await d365bcAdminService.uploadExtensionContent(tenantId, environmentName, companyId, extensionUploadId, appFilePath);
+
+    //     if (result)
+    //     {
+    //         return JsonSerializer.Serialize(new {
+    //             success = true,
+    //             message = $"Extension content uploaded successfully for upload ID {extensionUploadId}",
+    //             extensionUploadId = extensionUploadId
+    //         });
+    //     }
+
+    //     return JsonSerializer.Serialize(new { success = false, error = "Unable to upload extension content" });
+    // }
+
     [McpServerTool, Description("Clears the cached authentication token for the specified tenant, forcing a new login on the next API call.")]
     public static Task<string> clear_cached_token([Description("The tenant ID (GUID) for which to clear the cached token")] Guid tenantId)
     {
@@ -931,7 +999,9 @@ public class D365BCAdminService
             var url = $"https://login.microsoftonline.com/{tenantName}/.well-known/openid-configuration";
             Console.WriteLine($"🔍 [DEBUG] Making request to: {url}");
             
-            var response = await httpClient.GetAsync(url);
+            var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+            
+            var response = await staticHttpClient.SendAsync(httpRequest);
             Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
 
             if (!response.IsSuccessStatusCode)
@@ -1016,7 +1086,9 @@ public class D365BCAdminService
         var url = "https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments";
         Console.WriteLine($"� [DEBUG] Making API call to: {url}");
         
-        var response = await httpClient.GetAsync(url);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        
+        var response = await staticHttpClient.SendAsync(httpRequest);
         Console.WriteLine($"� [DEBUG] Response status: {response.StatusCode}");
         Console.WriteLine($"🔍 [DEBUG] Response headers: {response.Headers}");
 
@@ -1071,7 +1143,8 @@ public class D365BCAdminService
     public async Task<EnvironmentUpdateWindow?> getEnvironmentUpdateWindow(string environmentName, Guid tenantId)
     {
         var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/settings/upgrade";
-        var response = await httpClient.GetAsync(url);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1102,7 +1175,11 @@ public class D365BCAdminService
         var jsonContent = JsonSerializer.Serialize(requestBody);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
 
-        var response = await httpClient.PutAsync(url, content);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Put, url);
+
+        httpRequest.Content = content;
+
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1136,7 +1213,11 @@ public class D365BCAdminService
         var jsonContent = JsonSerializer.Serialize(requestBody);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
 
-        var response = await httpClient.PostAsync(url, content);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
+
+        httpRequest.Content = content;
+
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         var responseData = new ApplicationInsightsKeyResponse
         {
@@ -1160,7 +1241,11 @@ public class D365BCAdminService
         var jsonContent = JsonSerializer.Serialize(requestBody);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
 
-        var response = await httpClient.PutAsync(url, content);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Put, url);
+
+        httpRequest.Content = content;
+
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1184,7 +1269,11 @@ public class D365BCAdminService
         var jsonContent = JsonSerializer.Serialize(requestBody);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
 
-        var response = await httpClient.PutAsync(url, content);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Put, url);
+
+        httpRequest.Content = content;
+
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1195,10 +1284,28 @@ public class D365BCAdminService
         return null;
     }
 
+    public async Task<EnvironmentDeletionResponse?> deleteEnvironment(string environmentName)
+    {
+        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}";
+
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Delete, url);
+
+        var response = await staticHttpClient.SendAsync(httpRequest);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.Accepted)
+        {
+            var deletionResponse = await response.Content.ReadFromJsonAsync(EnvironmentDeletionResponseContext.Default.EnvironmentDeletionResponse);
+            return deletionResponse;
+        }
+
+        return null;
+    }
+
     public async Task<EnvironmentStorageUsage?> getUsageStorageForEnvironment(string environmentName)
     {
         var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/usedstorage";
-        var response = await httpClient.GetAsync(url);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1212,7 +1319,8 @@ public class D365BCAdminService
     public async Task<List<EnvironmentStorageUsage>?> getUsageStorageForAllEnvironments()
     {
         var url = "https://api.businesscentral.dynamics.com/admin/v2.27/environments/usedstorage";
-        var response = await httpClient.GetAsync(url);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1230,7 +1338,8 @@ public class D365BCAdminService
     public async Task<List<EnvironmentUpdateInfo>?> getEnvironmentUpdates(string environmentName)
     {
         var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/updates";
-        var response = await httpClient.GetAsync(url);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1256,7 +1365,9 @@ public class D365BCAdminService
         }
 
         var content = jsonContent != null ? new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json") : null;
-        var response = await httpClient.PatchAsync(url, content);
+        var httpRequest = CreateAuthenticatedRequest(new HttpMethod("PATCH"), url);
+        httpRequest.Content = content;
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1272,7 +1383,8 @@ public class D365BCAdminService
         var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/{applicationFamily}/environments/{environmentName}/sessions";
 
         // Use GET method as per Microsoft documentation
-        var response = await httpClient.GetAsync(url);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1291,7 +1403,9 @@ public class D365BCAdminService
     {
         var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/{applicationFamily}/environments/{environmentName}/sessions/{sessionId}";
 
-        var response = await httpClient.DeleteAsync(url);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Delete, url);
+
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         return response.IsSuccessStatusCode;
     }
@@ -1299,7 +1413,8 @@ public class D365BCAdminService
     public async Task<List<NotificationRecipient>?> getEnvironmentNotificationRecipient()
     {
         var url = "https://api.businesscentral.dynamics.com/admin/v2.27/settings/notification/recipients";
-        var response = await httpClient.GetAsync(url);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1327,7 +1442,11 @@ public class D365BCAdminService
         var jsonContent = JsonSerializer.Serialize(requestBody);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
 
-        var response = await httpClient.PutAsync(url, content);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Put, url);
+
+        httpRequest.Content = content;
+
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1342,7 +1461,9 @@ public class D365BCAdminService
     {
         var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/settings/notification/recipients/{recipientId}";
 
-        var response = await httpClient.DeleteAsync(url);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Delete, url);
+
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         return response.IsSuccessStatusCode;
     }
@@ -1350,7 +1471,8 @@ public class D365BCAdminService
     public async Task<List<InstalledApp>?> getInstalledApps(string environmentName)
     {
         var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/apps";
-        var response = await httpClient.GetAsync(url);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1369,7 +1491,9 @@ public class D365BCAdminService
     {
         var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/apps/availableUpdates";
         
-        var response = await httpClient.GetAsync(url);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1387,24 +1511,25 @@ public class D365BCAdminService
     public async Task<List<Feature>?> getAvailableFeatures(Guid tenantId, string environmentName, Guid companyId)
     {
         await EnsureAuthenticated(tenantId);
-
+        
         // Using the confirmed correct API endpoint
         var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/features";
-
+        
         Console.WriteLine($"🔍 [DEBUG] Making Automation API request to: {url}");
-        Console.WriteLine($"🔍 [DEBUG] Using token: {httpClient.DefaultRequestHeaders.Authorization?.Parameter?.Substring(0, 50)}...");
-
+        Console.WriteLine($"🔍 [DEBUG] Using token: {_accessToken?.Substring(0, 50)}...");
+        
         try
         {
-            var response = await httpClient.GetAsync(url);
+            var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+            var response = await staticHttpClient.SendAsync(httpRequest);
             Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
             Console.WriteLine($"🔍 [DEBUG] Response headers: {string.Join(", ", response.Headers.Select(h => $"{h.Key}: {string.Join(", ", h.Value)}"))}");
-
+            
             if (response.IsSuccessStatusCode)
             {
                 var responseContent = await response.Content.ReadAsStringAsync();
                 Console.WriteLine($"🔍 [DEBUG] Success! Response content: {responseContent}");
-
+                
                 var featuresResponse = await response.Content.ReadFromJsonAsync(FeaturesResponseContext.Default.FeaturesResponse);
 
                 if (featuresResponse?.Value != null)
@@ -1431,30 +1556,32 @@ public class D365BCAdminService
     public async Task<bool> activateFeature(Guid tenantId, string environmentName, Guid companyId, string featureId, bool updateInBackground = true, DateTime? startDateTime = null)
     {
         await EnsureAuthenticated(tenantId);
-
+        
         // API endpoint for feature activation - featureId must be wrapped in single quotes
         var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/features('{featureId}')/Microsoft.NAV.activate";
-
+        
         Console.WriteLine($"🔍 [DEBUG] Activating feature {featureId} at: {url}");
-        Console.WriteLine($"🔍 [DEBUG] Using token: {httpClient.DefaultRequestHeaders.Authorization?.Parameter?.Substring(0, 50)}...");
-
+        Console.WriteLine($"🔍 [DEBUG] Using token: {_accessToken?.Substring(0, 50)}...");
+        
         // Prepare request body
         var requestBody = new
         {
             updateInBackground = updateInBackground,
             startDateTime = (startDateTime ?? DateTime.UtcNow).ToString("yyyy-MM-ddTHH:mm:ssZ")
         };
-
+        
         var jsonContent = JsonSerializer.Serialize(requestBody);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-
+        
         Console.WriteLine($"🔍 [DEBUG] Request body: {jsonContent}");
-
+        
         try
         {
-            var response = await httpClient.PostAsync(url, content);
+            var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
+            httpRequest.Content = content;
+            var response = await staticHttpClient.SendAsync(httpRequest);
             Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
-
+            
             if (response.IsSuccessStatusCode)
             {
                 var responseContent = await response.Content.ReadAsStringAsync();
@@ -1477,7 +1604,7 @@ public class D365BCAdminService
 
         return false;
     }
-    
+
     public async Task<bool> deactivateFeature(Guid tenantId, string environmentName, Guid companyId, string featureId)
     {
         await EnsureAuthenticated(tenantId);
@@ -1486,14 +1613,16 @@ public class D365BCAdminService
         var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/features('{featureId}')/Microsoft.NAV.deactivate";
         
         Console.WriteLine($"🔍 [DEBUG] Deactivating feature {featureId} at: {url}");
-        Console.WriteLine($"🔍 [DEBUG] Using token: {httpClient.DefaultRequestHeaders.Authorization?.Parameter?.Substring(0, 50)}...");
+        Console.WriteLine($"🔍 [DEBUG] Using token: {_accessToken?.Substring(0, 50)}...");
         
         // Empty request body for deactivation
         var content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
         
         try
         {
-            var response = await httpClient.PostAsync(url, content);
+            var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
+            httpRequest.Content = content;
+            var response = await staticHttpClient.SendAsync(httpRequest);
             Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
             
             if (response.IsSuccessStatusCode)
@@ -1519,12 +1648,13 @@ public class D365BCAdminService
         return false;
     }
 
-
     public async Task<List<Company>?> getEnvironmentCompanies(string environmentName)
     {
         var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/v2.0/companies";
         
-        var response = await httpClient.GetAsync(url);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1546,7 +1676,11 @@ public class D365BCAdminService
         var jsonContent = JsonSerializer.Serialize(request);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
 
-        var response = await httpClient.PostAsync(url, content);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
+
+        httpRequest.Content = content;
+
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1564,7 +1698,11 @@ public class D365BCAdminService
         var jsonContent = JsonSerializer.Serialize(request);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
 
-        var response = await httpClient.PostAsync(url, content);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
+
+        httpRequest.Content = content;
+
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1581,7 +1719,9 @@ public class D365BCAdminService
             ? $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/apps/{appId}/operations/{operationId}"
             : $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/apps/{appId}/operations";
 
-        var response = await httpClient.GetAsync(url);
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+
+        var response = await staticHttpClient.SendAsync(httpRequest);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1596,22 +1736,6 @@ public class D365BCAdminService
         return null;
     }
 
-    public async Task<EnvironmentDeletionResponse?> deleteEnvironment(string environmentName)
-    {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}";
-        
-        var response = await httpClient.DeleteAsync(url);
-
-        // The API returns 202 (Accepted) for successful deletion initiation
-        if (response.StatusCode == System.Net.HttpStatusCode.Accepted || response.IsSuccessStatusCode)
-        {
-            var deletionResponse = await response.Content.ReadFromJsonAsync(EnvironmentDeletionResponseContext.Default.EnvironmentDeletionResponse);
-            return deletionResponse;
-        }
-
-        return null;
-    }
-
     public async Task<List<ExtensionDeploymentStatus>?> getExtensionDeploymentStatus(Guid tenantId, string environmentName, Guid companyId)
     {
         await EnsureAuthenticated(tenantId);
@@ -1620,11 +1744,12 @@ public class D365BCAdminService
         var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionDeploymentStatus";
         
         Console.WriteLine($"🔍 [DEBUG] Making Automation API request to: {url}");
-        Console.WriteLine($"🔍 [DEBUG] Using token: {httpClient.DefaultRequestHeaders.Authorization?.Parameter?.Substring(0, 50)}...");
+        Console.WriteLine($"🔍 [DEBUG] Using token: {_accessToken?.Substring(0, 50)}...");
         
         try
         {
-            var response = await httpClient.GetAsync(url);
+            var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+            var response = await staticHttpClient.SendAsync(httpRequest);
             Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
             
             if (response.IsSuccessStatusCode)
@@ -1663,13 +1788,13 @@ public class D365BCAdminService
         var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload";
         
         Console.WriteLine($"🔍 [DEBUG] Making Automation API request to: {url}");
-        Console.WriteLine($"🔍 [DEBUG] Using token: {httpClient.DefaultRequestHeaders.Authorization?.Parameter?.Substring(0, 50)}...");
+        Console.WriteLine($"🔍 [DEBUG] Using token: {_accessToken?.Substring(0, 50)}...");
         
         try
         {
             // First, try to get existing extension uploads to see the current state
             Console.WriteLine($"🔍 [DEBUG] Checking for existing extension uploads...");
-            var getResponse = await httpClient.GetAsync(url);
+            var getResponse = await staticHttpClient.GetAsync(url);
             if (getResponse.IsSuccessStatusCode)
             {
                 var existingContent = await getResponse.Content.ReadAsStringAsync();
@@ -1689,7 +1814,9 @@ public class D365BCAdminService
             Console.WriteLine($"🔍 [DEBUG] Request body: {jsonContent}");
             
             // Try POST first (standard REST convention)
-            var response = await httpClient.PostAsync(url, content);
+            var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
+            httpRequest.Content = content;
+            var response = await staticHttpClient.SendAsync(httpRequest);
             Console.WriteLine($"🔍 [DEBUG] POST Response status: {response.StatusCode}");
             
             if (response.IsSuccessStatusCode && response.StatusCode == System.Net.HttpStatusCode.Created)
@@ -1715,7 +1842,7 @@ public class D365BCAdminService
                 
                 // Try listing all and getting the first one
                 Console.WriteLine($"🔍 [DEBUG] Attempting to list all extension uploads to find existing record...");
-                var listResponse = await httpClient.GetAsync(url);
+                var listResponse = await staticHttpClient.GetAsync(url);
                 if (listResponse.IsSuccessStatusCode)
                 {
                     var listContent = await listResponse.Content.ReadAsStringAsync();
@@ -1795,7 +1922,7 @@ public class D365BCAdminService
             var getUrl = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload({extensionUploadId})";
             Console.WriteLine($"🔍 [DEBUG] Getting extension upload record to retrieve etag from: {getUrl}");
             
-            var getResponse = await httpClient.GetAsync(getUrl);
+            var getResponse = await staticHttpClient.GetAsync(getUrl);
             if (!getResponse.IsSuccessStatusCode)
             {
                 var errorContent = await getResponse.Content.ReadAsStringAsync();
@@ -1856,8 +1983,13 @@ public class D365BCAdminService
                 Content = patchContent
             };
             request.Headers.Add("If-Match", etag);
+            // Add authentication
+            if (!string.IsNullOrEmpty(_accessToken))
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
+            }
 
-            var response = await httpClient.SendAsync(request);
+            var response = await staticHttpClient.SendAsync(request);
             Console.WriteLine($"🔍 [DEBUG] PATCH Response status: {response.StatusCode}");
             Console.WriteLine($"🔍 [DEBUG] PATCH Response headers: {string.Join(", ", response.Headers.Select(h => $"{h.Key}={string.Join(",", h.Value)}"))}");
             Console.WriteLine($"🔍 [DEBUG] PATCH Content headers: {string.Join(", ", response.Content.Headers.Select(h => $"{h.Key}={string.Join(",", h.Value)}"))}");
@@ -1903,7 +2035,8 @@ public class D365BCAdminService
         
         try
         {
-            var response = await httpClient.GetAsync(url);
+            var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+            var response = await staticHttpClient.SendAsync(httpRequest);
             Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
             
             if (response.IsSuccessStatusCode)
@@ -1928,7 +2061,7 @@ public class D365BCAdminService
                         try
                         {
                             var contentUrl = $"https://api.businesscentral.dynamics.com/v2.0/{url.Split('/')[5]}/api/microsoft/automation/v2.0/companies({url.Split("companies(")[1].Split(")")[0]})/extensionUpload({extensionUploadId})/extensionContent";
-                            var contentResponse = await httpClient.GetAsync(contentUrl);
+                            var contentResponse = await staticHttpClient.GetAsync(contentUrl);
                                 Console.WriteLine($"🔍 [DEBUG] Attempting to retrieve content from: {contentUrl}");
                             if (contentResponse.IsSuccessStatusCode)
                             {
@@ -1948,7 +2081,7 @@ public class D365BCAdminService
                                             var actualMediaLink = mediaLinkElement.GetString();
                                             Console.WriteLine($"🔍 [DEBUG] Found media read link in JSON: {actualMediaLink}");
                                     
-                                            var actualResponse = await httpClient.GetAsync(actualMediaLink);
+                                            var actualResponse = await staticHttpClient.GetAsync(actualMediaLink);
                                             Console.WriteLine($"🔍 [DEBUG] Response from actual media link: HTTP {actualResponse.StatusCode}");
                                             if (actualResponse.IsSuccessStatusCode)
                                             {
@@ -2070,7 +2203,7 @@ public class D365BCAdminService
             var getUrl = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload({extensionUploadId})";
             Console.WriteLine($"🔍 [DEBUG] Getting extension upload record for etag...");
             
-            var getResponse = await httpClient.GetAsync(getUrl);
+            var getResponse = await staticHttpClient.GetAsync(getUrl);
             if (!getResponse.IsSuccessStatusCode)
             {
                 Console.WriteLine($"❌ [DEBUG] Failed to GET extension record: HTTP {getResponse.StatusCode}");
@@ -2106,7 +2239,7 @@ public class D365BCAdminService
             patchRequest.Headers.Add("If-Match", etag);
             
             Console.WriteLine($"🔍 [DEBUG] Sending PATCH to update schedule and trigger deployment...");
-            var patchResponse = await httpClient.SendAsync(patchRequest);
+            var patchResponse = await staticHttpClient.SendAsync(patchRequest);
             Console.WriteLine($"🔍 [DEBUG] PATCH response status: {patchResponse.StatusCode}");
             
             if (patchResponse.IsSuccessStatusCode)
@@ -2154,9 +2287,14 @@ public class D365BCAdminService
             // POST with no body (or empty body) to the action
             var request = new HttpRequestMessage(HttpMethod.Post, actionUrl);
             // Don't set Content-Type for action invocation - let it be null or use default
+            // Add authentication
+            if (!string.IsNullOrEmpty(_accessToken))
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
+            }
             
             Console.WriteLine($"🔍 [DEBUG] Sending POST request to invoke upload action...");
-            var response = await httpClient.SendAsync(request);
+            var response = await staticHttpClient.SendAsync(request);
             
             Console.WriteLine($"🔍 [DEBUG] Microsoft.NAV.upload response status: {response.StatusCode}");
             Console.WriteLine($"🔍 [DEBUG] Response headers: {string.Join(", ", response.Headers.Select(h => $"{h.Key}={string.Join("|", h.Value)}"))}");
@@ -2275,6 +2413,8 @@ public class D365BCAdminService
         }
     }
 
-
     #endregion
 }
+
+
+
