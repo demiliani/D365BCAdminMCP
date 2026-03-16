@@ -658,6 +658,62 @@ internal sealed partial class UpdateAppResponseContext : JsonSerializerContext {
 
 }
 
+public class InstallAppRequest
+{
+    [JsonPropertyName("targetVersion")]
+    public string? TargetVersion { get; set; }
+    
+    [JsonPropertyName("useEnvironmentUpdateWindow")]
+    public bool UseEnvironmentUpdateWindow { get; set; }
+    
+    [JsonPropertyName("allowPreviewVersion")]
+    public bool AllowPreviewVersion { get; set; }
+    
+    [JsonPropertyName("installOrUpdateNeededDependencies")]
+    public bool InstallOrUpdateNeededDependencies { get; set; }
+    
+    [JsonPropertyName("acceptIsvEula")]
+    public bool AcceptIsvEula { get; set; } = true;
+    
+    [JsonPropertyName("languageId")]
+    public string? LanguageId { get; set; }
+}
+
+public class InstallAppResponse
+{
+    [JsonPropertyName("id")]
+    public Guid? Id { get; set; }
+    
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+    
+    [JsonPropertyName("sourceAppVersion")]
+    public string? SourceAppVersion { get; set; }
+    
+    [JsonPropertyName("targetAppVersion")]
+    public string? TargetAppVersion { get; set; }
+    
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+    
+    [JsonPropertyName("createdOn")]
+    public DateTime? CreatedOn { get; set; }
+    
+    [JsonPropertyName("errorMessage")]
+    public string? ErrorMessage { get; set; }
+}
+
+[JsonSerializable(typeof(InstallAppResponse))]
+internal sealed partial class InstallAppResponseContext : JsonSerializerContext {
+
+}
+
+public class InstallAppResult
+{
+    public InstallAppResponse? Response { get; set; }
+    public UpdateAppErrorResponse? Error { get; set; }
+}
+
 public class UninstallAppRequest
 {
     [JsonPropertyName("useEnvironmentUpdateWindow")]

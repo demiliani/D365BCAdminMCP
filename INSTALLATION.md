@@ -1,4 +1,4 @@
-# Installation Guide - D365 Business Central Admin MCP Server
+# Installation Guide - D365 Business Central Admin MCP Server (YAMPI)
 
 Complete installation instructions for Windows, macOS, and Linux.
 

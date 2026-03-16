@@ -1,11 +1,11 @@
-# Dynamics 365 Business Central Admin MCP Server
+# Dynamics 365 Business Central Admin MCP Server (YAMPI)
 
 A Model Context Protocol (MCP) server that enables AI assistants like Claude Desktop, GitHub Copilot, and Cursor to manage Dynamics 365 Business Central environments through natural language commands.
 
 ## 🌟 Features
 
 - 🔐 **Interactive Authentication** - Secure Microsoft Entra ID authentication with browser-based login
-- 📦 **33 Administrative Tools** - Complete environment, app, session, PTE upload, and extension management
+- 📦 **34 Administrative Tools** - Complete environment, app, session, PTE upload, and extension management
 - ⚡ **Smart Token Caching** - Automatic token refresh to minimize authentication prompts
 - 🌍 **Multi-Tenant Support** - Manage multiple Business Central tenants seamlessly
 - 💬 **Natural Language Interface** - Control BC through conversational AI commands
@@ -123,6 +123,7 @@ Once configured, use natural language commands in your AI assistant:
 ```
 "List all installed apps in Production"
 "Show available updates for my apps"
+"Install app with ID <app-id> in my Production environment"
 "Update the Sales Module app to version 2.0"
 "Uninstall the old Marketing app from Sandbox"
 ```
@@ -152,7 +153,7 @@ Once configured, use natural language commands in your AI assistant:
 "Check the extension deployment status for Fabrikam in Production"
 ```
 
-## 🛠️ Available Tools (33 Total)
+## 🛠️ Available Tools (34 Total)
 
 The MCP server exposes 33 administrative tools organized by category:
 
@@ -178,12 +179,13 @@ The MCP server exposes 33 administrative tools organized by category:
 | `get_all_environments_storage_usage` | Get storage usage for all environments |
 | `get_companies` | List companies in an environment |
 
-### 📦 Application Management (5 tools)
+### 📦 Application Management (6 tools)
 
 | Tool | Description |
 |------|-------------|
 | `get_installed_apps` | List apps installed in an environment |
 | `get_available_app_updates` | Check for available app updates |
+| `install_app` | Install a Marketplace (AppSource) app in a Business Central environment |
 | `update_app` | Update an app to a specific version |
 | `uninstall_app` | Remove an app from an environment |
 | `get_app_operations` | Get status of app install/update/uninstall operations |
@@ -287,7 +289,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **npm Package:** https://www.npmjs.com/package/@demiliani/d365bc-admin-mcp
 - **Issues:** Report bugs or request features via GitHub Issues
-- **Version:** 1.1.2
+- **Version:** 1.2.0
 
 ## 🙏 Acknowledgments
 

@@ -570,6 +570,46 @@ public class D365BCAdminService : IDisposable
         return JsonSerializer.Serialize(new { error = "Unable to update app" });
     }
 
+    [McpServerTool, Description("Installs an app in a Business Central environment. acceptIsvEula defaults to true, meaning you agree to the ISV terms.")]
+    public static async Task<string> install_app(
+        [Description("The tenant ID (GUID) for which to install the app")] Guid tenantId,
+        [Description("The name of the environment")] string environmentName,
+        [Description("The ID of the app to install")] Guid appId,
+        [Description("Whether to use the environment update window")] bool useEnvironmentUpdateWindow = false,
+        [Description("Whether to install or update needed dependencies; if false, missing dependencies are returned as error details")] bool installOrUpdateNeededDependencies = false,
+        [Description("Whether to accept the ISV EULA (must be true for installation to proceed; defaults to true)")] bool acceptIsvEula = true,
+        [Description("Optional: Target version to install; required when allowPreviewVersion is true")] string? targetVersion = null,
+        [Description("Optional: Whether to allow preview versions; requires targetVersion when true")] bool allowPreviewVersion = false,
+        [Description("Optional: Locale ID language code, e.g. 'en-US'")] string? languageId = null)
+    {
+        var accessToken = await get_microsoft_entra_id_token(tenantId);
+        var d365bcAdminService = new D365BCAdminService(accessToken);
+
+        var request = new InstallAppRequest
+        {
+            TargetVersion = targetVersion,
+            UseEnvironmentUpdateWindow = useEnvironmentUpdateWindow,
+            AllowPreviewVersion = allowPreviewVersion,
+            InstallOrUpdateNeededDependencies = installOrUpdateNeededDependencies,
+            AcceptIsvEula = acceptIsvEula,
+            LanguageId = languageId
+        };
+
+        var result = await d365bcAdminService.installApp("BusinessCentral", environmentName, appId, request);
+
+        if (result.Response != null)
+        {
+            return JsonSerializer.Serialize(result.Response);
+        }
+
+        if (result.Error != null)
+        {
+            return JsonSerializer.Serialize(result.Error);
+        }
+
+        return JsonSerializer.Serialize(new { error = "Unable to install app" });
+    }
+
     [McpServerTool, Description("Uninstalls an app from a Business Central environment.")]
     public static async Task<string> uninstall_app(
         [Description("The tenant ID (GUID) for which to uninstall the app")] Guid tenantId,
@@ -1689,6 +1729,33 @@ public class D365BCAdminService : IDisposable
         }
 
         return null;
+    }
+
+    public async Task<InstallAppResult> installApp(string applicationFamily, string environmentName, Guid appId, InstallAppRequest request)
+    {
+        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/{applicationFamily}/environments/{environmentName}/apps/{appId}/install";
+
+        var jsonContent = JsonSerializer.Serialize(request);
+        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
+
+        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
+        httpRequest.Content = content;
+
+        var response = await staticHttpClient.SendAsync(httpRequest);
+
+        if (response.IsSuccessStatusCode)
+        {
+            var installResponse = await response.Content.ReadFromJsonAsync(InstallAppResponseContext.Default.InstallAppResponse);
+            return new InstallAppResult { Response = installResponse };
+        }
+
+        if ((int)response.StatusCode == 400)
+        {
+            var errorResponse = await response.Content.ReadFromJsonAsync<UpdateAppErrorResponse>();
+            return new InstallAppResult { Error = errorResponse };
+        }
+
+        return new InstallAppResult();
     }
 
     public async Task<UninstallAppResponse?> uninstallApp(string environmentName, Guid appId, UninstallAppRequest request)
