@@ -10,7 +10,7 @@
     <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <PackageId>D365BCAdminMCP</PackageId>
     <Title>Dynamics 365 Business Central Admin MCP Server</Title>
     <Authors>Stefano Demiliani</Authors>

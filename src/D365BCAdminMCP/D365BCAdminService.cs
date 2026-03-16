@@ -576,7 +576,7 @@ public class D365BCAdminService : IDisposable
         [Description("The name of the environment")] string environmentName,
         [Description("The ID of the app to install")] Guid appId,
         [Description("Whether to use the environment update window")] bool useEnvironmentUpdateWindow = false,
-        [Description("Whether to install or update needed dependencies; if false, missing dependencies are returned as error details")] bool installOrUpdateNeededDependencies = false,
+        [Description("Whether to install or update needed dependencies; if false, missing dependencies are returned as error details")] bool installOrUpdateNeededDependencies = true,
         [Description("Whether to accept the ISV EULA (must be true for installation to proceed; defaults to true)")] bool acceptIsvEula = true,
         [Description("Optional: Target version to install; required when allowPreviewVersion is true")] string? targetVersion = null,
         [Description("Optional: Whether to allow preview versions; requires targetVersion when true")] bool allowPreviewVersion = false,
