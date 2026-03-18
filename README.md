@@ -104,6 +104,8 @@ After installation, configure your AI assistant to use the MCP server.
 
 On first use, a browser window will open for Microsoft Entra ID authentication. Sign in with your Business Central administrator account. The token is cached for 50 minutes and automatically refreshed.
 
+If the browser window does not launch automatically, run the MCP tool `force_interactive_auth` (e.g., ask your assistant: "Force interactive login for tenant `00000000-0000-0000-0000-000000000000`"). This command bypasses cached tokens and immediately opens the Microsoft login dialog for the specified tenant.
+
 **No additional setup required** - the MCP server handles authentication automatically!
 
 ## 💡 Usage Examples
@@ -157,11 +159,12 @@ Once configured, use natural language commands in your AI assistant:
 
 The MCP server exposes 33 administrative tools organized by category:
 
-### 🔑 Authentication & Tenant Management (2 tools)
+### 🔑 Authentication & Tenant Management (3 tools)
 
 | Tool | Description |
 |------|-------------|
 | `get_microsoft_entra_id_token` | Get authentication token with intelligent caching |
+| `force_interactive_auth` | Force browser-based login and refresh the cached token for a tenant |
 | `get_tenant_id_from_tenant_name` | Retrieve tenant ID from tenant name |
 
 ### 🌍 Environment Management (10 tools)
@@ -270,6 +273,9 @@ which d365bc-admin-mcp
 - Ensure you have Business Central admin privileges
 - Check that you're signing in with the correct Microsoft account
 - Try clearing the token cache: "Clear cached token for tenant [tenant-id]"
+- If the login prompt never appears, run two back-to-back commands:
+  1. "Clear cached token for tenant [tenant-id]"
+  2. "Force interactive login for tenant [tenant-id]" (invokes `force_interactive_auth` to launch the browser immediately)
 
 ### MCP Server Not Appearing
 - Verify the config file location for your OS
