@@ -1,8 +1,10 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.ComponentModel;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using Azure.Core;
 using Azure.Identity;
@@ -16,12 +18,17 @@ public class D365BCAdminService : IDisposable
     private const string AdminApiBaseUrl = "https://api.businesscentral.dynamics.com/admin/" + AdminApiVersion;
 
     // Static shared HttpClient for all instances (best practice to avoid socket exhaustion)
-    private static HttpClient staticHttpClient = new HttpClient();
+    private static readonly TimeSpan HttpTimeout = TimeSpan.FromMinutes(5);
+    private static HttpClient staticHttpClient = new HttpClient { Timeout = HttpTimeout };
     private string? _accessToken;
+
+    // Set by the tool for the duration of one MCP request; honours cancellation sent by the client.
+    internal CancellationToken CancellationToken { get; set; }
     private bool _disposed = false;
     
     // Static token cache for sharing across method calls
     private static readonly Dictionary<Guid, CachedToken> _tokenCache = new();
+    private static readonly Dictionary<Guid, TokenCredential> _credentials = new();
     private static readonly object _tokenCacheLock = new object();
 
     // Token cache class
@@ -80,7 +87,7 @@ public class D365BCAdminService : IDisposable
         _accessToken = await AcquireTokenAsync(tenantId == Guid.Empty ? null : tenantId);
     }
 
-    internal static void SetHttpMessageHandlerForTesting(HttpMessageHandler handler) => staticHttpClient = new HttpClient(handler);
+    internal static void SetHttpMessageHandlerForTesting(HttpMessageHandler handler) => staticHttpClient = new HttpClient(handler) { Timeout = HttpTimeout };
 
     internal static void SetCachedTokenForTesting(Guid tenantId, string token)
     {
@@ -91,9 +98,10 @@ public class D365BCAdminService : IDisposable
     }
 
     // Tokens are cached per tenant; Guid.Empty is used for the credential's default tenant.
-    private static async Task<string> AcquireTokenAsync(Guid? tenantId)
+    private static async Task<string> AcquireTokenAsync(Guid? tenantId, CancellationToken cancellationToken = default)
     {
         var cacheKey = tenantId ?? Guid.Empty;
+        TokenCredential? knownCredential;
         lock (_tokenCacheLock)
         {
             if (_tokenCache.TryGetValue(cacheKey, out var cachedToken) && !cachedToken.IsExpired)
@@ -101,30 +109,32 @@ public class D365BCAdminService : IDisposable
                 Log.Debug($"Using cached token for tenant {cacheKey}, expires: {cachedToken.ExpiresOn}");
                 return cachedToken.Token;
             }
+            _credentials.TryGetValue(cacheKey, out knownCredential);
         }
 
-        Log.Info($"Acquiring new token for tenant {cacheKey}");
         var tokenRequestContext = new TokenRequestContext(new[] { "https://api.businesscentral.dynamics.com/.default" });
-
         AccessToken tokenResult;
         try
         {
-            var options = new DefaultAzureCredentialOptions();
-            if (tenantId.HasValue)
+            if (knownCredential == null)
             {
-                options.TenantId = tenantId.Value.ToString();
+                throw new CredentialUnavailableException("No credential has been used for this tenant yet");
             }
-            tokenResult = await new DefaultAzureCredential(options).GetTokenAsync(tokenRequestContext);
+            tokenResult = await knownCredential.GetTokenAsync(tokenRequestContext, cancellationToken);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            Log.Warn($"DefaultAzureCredential failed ({ex.Message}); falling back to interactive browser authentication");
-            var interactiveOptions = new InteractiveBrowserCredentialOptions();
-            if (tenantId.HasValue)
+            if (knownCredential != null)
             {
-                interactiveOptions.TenantId = tenantId.Value.ToString();
+                Log.Warn($"Token refresh failed for tenant {cacheKey} ({ex.Message}); signing in again");
             }
-            tokenResult = await new InteractiveBrowserCredential(interactiveOptions).GetTokenAsync(tokenRequestContext);
+            Log.Info($"Acquiring new token for tenant {cacheKey}");
+            TokenCredential credential;
+            (credential, tokenResult) = await SignInAsync(tenantId, tokenRequestContext, cancellationToken);
+            lock (_tokenCacheLock)
+            {
+                _credentials[cacheKey] = credential;
+            }
         }
 
         lock (_tokenCacheLock)
@@ -136,8 +146,110 @@ public class D365BCAdminService : IDisposable
         return tokenResult.Token;
     }
 
-    private static async Task<D365BCAdminService> CreateServiceAsync(Guid tenantId) =>
-        new D365BCAdminService(await AcquireTokenAsync(tenantId));
+    private static async Task<(TokenCredential Credential, AccessToken Token)> SignInAsync(Guid? tenantId, TokenRequestContext context, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var options = new DefaultAzureCredentialOptions();
+            if (tenantId.HasValue)
+            {
+                options.TenantId = tenantId.Value.ToString();
+            }
+            var credential = new DefaultAzureCredential(options);
+            return (credential, await credential.GetTokenAsync(context, cancellationToken));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Log.Warn($"DefaultAzureCredential failed ({ex.Message}); falling back to interactive browser authentication");
+        }
+
+        if (PersistentTokenCacheEnabled)
+        {
+            try
+            {
+                return await PersistentInteractiveSignInAsync(tenantId, context, cancellationToken);
+            }
+            catch (Exception ex) when (IsPersistenceFailure(ex))
+            {
+                Log.Warn($"Persistent token cache unavailable ({ex.Message}); the login will be kept in memory only");
+            }
+        }
+
+        var inMemoryCredential = new InteractiveBrowserCredential(InteractiveOptions(tenantId));
+        return (inMemoryCredential, await inMemoryCredential.GetTokenAsync(context, cancellationToken));
+    }
+
+    // The encrypted MSAL cache keeps refresh tokens across restarts; the authentication record (account and tenant, no secrets)
+    // tells the credential which cached account to use, so no browser window opens while the refresh token is valid.
+    private static async Task<(TokenCredential Credential, AccessToken Token)> PersistentInteractiveSignInAsync(Guid? tenantId, TokenRequestContext context, CancellationToken cancellationToken)
+    {
+        var options = InteractiveOptions(tenantId);
+        options.TokenCachePersistenceOptions = new TokenCachePersistenceOptions { Name = TokenCacheName };
+
+        var recordPath = AuthenticationRecordPath(tenantId ?? Guid.Empty);
+        AuthenticationRecord? record = null;
+        if (File.Exists(recordPath))
+        {
+            try
+            {
+                await using var stream = File.OpenRead(recordPath);
+                record = await AuthenticationRecord.DeserializeAsync(stream, cancellationToken);
+                options.AuthenticationRecord = record;
+            }
+            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+            {
+                Log.Warn($"Ignoring unreadable authentication record {recordPath}: {ex.Message}");
+            }
+        }
+
+        var credential = new InteractiveBrowserCredential(options);
+        if (record == null)
+        {
+            record = await credential.AuthenticateAsync(context, cancellationToken);
+            Directory.CreateDirectory(Path.GetDirectoryName(recordPath)!);
+            await using var stream = File.Create(recordPath);
+            await record.SerializeAsync(stream, cancellationToken);
+        }
+
+        return (credential, await credential.GetTokenAsync(context, cancellationToken));
+    }
+
+    private static InteractiveBrowserCredentialOptions InteractiveOptions(Guid? tenantId)
+    {
+        var options = new InteractiveBrowserCredentialOptions();
+        if (tenantId.HasValue)
+        {
+            options.TenantId = tenantId.Value.ToString();
+        }
+        return options;
+    }
+
+    private static bool IsPersistenceFailure(Exception ex)
+    {
+        for (Exception? current = ex; current != null; current = current.InnerException)
+        {
+            if (current.GetType().Name.Contains("Persistence", StringComparison.Ordinal)
+                || current.Message.Contains("persistence", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    internal const string PersistentTokenCacheEnvironmentVariable = "D365BC_MCP_PERSIST_TOKEN_CACHE";
+    private const string TokenCacheName = "D365BCAdminMCP";
+
+    private static bool PersistentTokenCacheEnabled =>
+        !string.Equals(System.Environment.GetEnvironmentVariable(PersistentTokenCacheEnvironmentVariable)?.Trim(), "false", StringComparison.OrdinalIgnoreCase);
+
+    internal static string AuthenticationRecordDirectory { get; set; } =
+        Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), TokenCacheName);
+
+    internal static string AuthenticationRecordPath(Guid tenantId) => Path.Combine(AuthenticationRecordDirectory, $"auth-record-{tenantId}.json");
+
+    private static async Task<D365BCAdminService> CreateServiceAsync(Guid tenantId, CancellationToken cancellationToken = default) =>
+        new D365BCAdminService(await AcquireTokenAsync(tenantId, cancellationToken)) { CancellationToken = cancellationToken };
 
     private static string ToJson<T>(ApiResult<T> result) =>
         result.Success ? JsonSerializer.Serialize(result.Value) : ErrorJson(result.Error);
@@ -149,7 +261,7 @@ public class D365BCAdminService : IDisposable
 
     // The token itself is never returned: it would end up in the model context and chat history.
     [McpServerTool, Description("Signs in to Microsoft Entra ID for the specified tenant (Azure CLI / managed identity, falling back to interactive browser login) and caches the token used by all other tools. Returns the authentication status and expiry, not the token.")]
-    public static async Task<string> get_microsoft_entra_id_token([Description("The tenant ID (GUID) to sign in to")] Guid tenantId)
+    public static async Task<string> get_microsoft_entra_id_token([Description("The tenant ID (GUID) to sign in to")] Guid tenantId, CancellationToken cancellationToken = default)
     {
         bool fromCache;
         lock (_tokenCacheLock)
@@ -159,9 +271,9 @@ public class D365BCAdminService : IDisposable
 
         try
         {
-            await AcquireTokenAsync(tenantId);
+            await AcquireTokenAsync(tenantId, cancellationToken);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             Log.Error($"Authentication failed for tenant {tenantId}: {ex.Message}");
             return JsonSerializer.Serialize(new { success = false, tenantId, error = $"Authentication failed: {ex.Message}" });
@@ -210,18 +322,19 @@ public class D365BCAdminService : IDisposable
     }
 
     [McpServerTool, Description("Gets environment information for a Dynamics 365 Business Central tenant.")]
-    public static async Task<string> get_environment_informations([Description("The tenant ID (GUID) for which to get environment information")] Guid tenantId)
+    public static async Task<string> get_environment_informations([Description("The tenant ID (GUID) for which to get environment information")] Guid tenantId, CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getEnvironmentInformations(tenantId));
     }
 
     [McpServerTool, Description("Gets the update window settings for a specific Business Central environment.")]
     public static async Task<string> get_environment_update_window(
         [Description("The tenant ID (GUID) for which to get environment update window information")] Guid tenantId,
-        [Description("The name of the environment to get update window for")] string environmentName)
+        [Description("The name of the environment to get update window for")] string environmentName,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getEnvironmentUpdateWindow(environmentName, tenantId));
     }
 
@@ -231,9 +344,10 @@ public class D365BCAdminService : IDisposable
         [Description("The name of the environment to set update window for")] string environmentName,
         [Description("The preferred start time (HH:mm format, e.g., '22:00')")] string preferredStartTime,
         [Description("The preferred end time (HH:mm format, e.g., '06:00')")] string preferredEndTime,
-        [Description("The Windows time zone identifier (e.g., 'UTC', 'Eastern Standard Time')")] string timeZoneId = "UTC")
+        [Description("The Windows time zone identifier (e.g., 'UTC', 'Eastern Standard Time')")] string timeZoneId = "UTC",
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.setEnvironmentUpdateWindow(environmentName, preferredStartTime, preferredEndTime, timeZoneId));
     }
 
@@ -241,9 +355,10 @@ public class D365BCAdminService : IDisposable
     public static async Task<string> set_environment_application_insights_connection_string(
         [Description("The tenant ID (GUID) for which to set Application Insights connection string")] Guid tenantId,
         [Description("The name of the environment to set Application Insights connection string for")] string environmentName,
-        [Description("The Application Insights connection string/key to set")] string appInsightsKey)
+        [Description("The Application Insights connection string/key to set")] string appInsightsKey,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         var response = await d365bcAdminService.setEnvironmentApplicationInsightsConnectionString(environmentName, appInsightsKey);
 
         return JsonSerializer.Serialize(response);
@@ -256,9 +371,10 @@ public class D365BCAdminService : IDisposable
         [Description("The type of environment to create (Sandbox, Production, etc.)")] string environmentType,
         [Description("The country code for the environment (e.g., US, IT, GB)")] string countryCode,
         [Description("Optional: The ring to create the environment in (e.g. 'Preview', only for Sandbox environments). Defaults to the production ring.")] string? ringName = null,
-        [Description("Optional: The application version to create the environment on (e.g. '26.1.12345.0'). Defaults to the latest available version.")] string? applicationVersion = null)
+        [Description("Optional: The application version to create the environment on (e.g. '26.1.12345.0'). Defaults to the latest available version.")] string? applicationVersion = null,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.createNewEnvironment(environmentName, environmentType, countryCode, ringName, applicationVersion));
     }
 
@@ -267,27 +383,30 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID) for which to copy the environment")] Guid tenantId,
         [Description("The name of the source environment to copy from")] string sourceEnvironmentName,
         [Description("The name of the new environment to create")] string newEnvironmentName,
-        [Description("The type of the new environment (Sandbox, Production, etc.)")] string newEnvironmentType)
+        [Description("The type of the new environment (Sandbox, Production, etc.)")] string newEnvironmentType,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.copyEnvironment(sourceEnvironmentName, newEnvironmentName, newEnvironmentType));
     }
 
     [McpServerTool, Description("Deletes a Business Central environment. Returns HTTP status code 202 (Accepted) with operation details. Expected errors: invalidStatusCannotDeleteTenant (can't delete in current state), tenantDeletionInProgress (already being deleted), ambiguousRequest (multiple environments with same name), environmentNotFound (environment not found).")]
     public static async Task<string> delete_environment(
         [Description("The tenant ID (GUID) for which to delete the environment")] Guid tenantId,
-        [Description("The name of the environment to delete")] string environmentName)
+        [Description("The name of the environment to delete")] string environmentName,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.deleteEnvironment(environmentName));
     }
 
     [McpServerTool, Description("Recovers a soft-deleted Business Central environment (API v2.18+). Asynchronous: track the returned operation with get_environment_operations.")]
     public static async Task<string> recover_environment(
         [Description("The tenant ID (GUID)")] Guid tenantId,
-        [Description("The name of the deleted environment to recover")] string environmentName)
+        [Description("The name of the deleted environment to recover")] string environmentName,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.recoverEnvironment(environmentName));
     }
 
@@ -295,9 +414,10 @@ public class D365BCAdminService : IDisposable
     public static async Task<string> rename_environment(
         [Description("The tenant ID (GUID)")] Guid tenantId,
         [Description("The current name of the environment")] string environmentName,
-        [Description("The new name of the environment (max 30 characters, starts with a letter; letters, digits, '-' and '_')")] string newEnvironmentName)
+        [Description("The new name of the environment (max 30 characters, starts with a letter; letters, digits, '-' and '_')")] string newEnvironmentName,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.renameEnvironment(environmentName, newEnvironmentName));
     }
 
@@ -310,9 +430,10 @@ public class D365BCAdminService : IDisposable
         [Description("The point in time to restore to, in ISO 8601 format (UTC), e.g. '2026-11-15T20:00:00Z'")] DateTime pointInTime,
         [Description("Optional: Do not install per-tenant extensions in the restored environment (default: false)")] bool skipInstallingPtes = false,
         [Description("Optional: Do not install third-party AppSource apps in the restored environment (default: false)")] bool skipInstallingThirdPartyGlobalApps = false,
-        [Description("Optional: Skip the cleanup that disables integrations and selected setups in the restored environment (default: false)")] bool skipEnvironmentCleanup = false)
+        [Description("Optional: Skip the cleanup that disables integrations and selected setups in the restored environment (default: false)")] bool skipEnvironmentCleanup = false,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.restoreEnvironment(environmentName, newEnvironmentName, environmentType, pointInTime,
             skipInstallingPtes, skipInstallingThirdPartyGlobalApps, skipEnvironmentCleanup));
     }
@@ -320,9 +441,10 @@ public class D365BCAdminService : IDisposable
     [McpServerTool(ReadOnly = true, Idempotent = true), Description("Lists the periods to which a Business Central environment can be restored, with the application version each period restores to.")]
     public static async Task<string> get_available_restore_periods(
         [Description("The tenant ID (GUID)")] Guid tenantId,
-        [Description("The name of the environment")] string environmentName)
+        [Description("The name of the environment")] string environmentName,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getAvailableRestorePeriods(environmentName));
     }
 
@@ -330,43 +452,48 @@ public class D365BCAdminService : IDisposable
     public static async Task<string> get_environment_operations(
         [Description("The tenant ID (GUID)")] Guid tenantId,
         [Description("Optional: The name of the environment")] string? environmentName = null,
-        [Description("Optional: The ID of a specific operation, e.g. the id returned by create_new_environment or copy_environment")] Guid? operationId = null)
+        [Description("Optional: The ID of a specific operation, e.g. the id returned by create_new_environment or copy_environment")] Guid? operationId = null,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getEnvironmentOperations(environmentName, operationId));
     }
 
     [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets the tenant quotas: maximum number of production and sandbox environments and storage limits.")]
     public static async Task<string> get_environment_quotas(
-        [Description("The tenant ID (GUID)")] Guid tenantId)
+        [Description("The tenant ID (GUID)")] Guid tenantId,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getEnvironmentQuotas());
     }
 
     [McpServerTool, Description("Gets storage usage information for a specific Business Central environment.")]
     public static async Task<string> get_usage_storage_for_environment(
         [Description("The tenant ID (GUID) for which to get storage usage")] Guid tenantId,
-        [Description("The name of the environment to get storage usage for")] string environmentName)
+        [Description("The name of the environment to get storage usage for")] string environmentName,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getUsageStorageForEnvironment(environmentName));
     }
 
     [McpServerTool, Description("Gets storage usage information for all Business Central environments in the tenant.")]
     public static async Task<string> get_usage_storage_for_all_environments(
-        [Description("The tenant ID (GUID) for which to get storage usage for all environments")] Guid tenantId)
+        [Description("The tenant ID (GUID) for which to get storage usage for all environments")] Guid tenantId,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getUsageStorageForAllEnvironments());
     }
 
     [McpServerTool, Description("Gets information about available updates for a specific Business Central environment.")]
     public static async Task<string> get_environment_updates(
         [Description("The tenant ID (GUID) for which to get environment updates")] Guid tenantId,
-        [Description("The name of the environment to get updates for")] string environmentName)
+        [Description("The name of the environment to get updates for")] string environmentName,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getEnvironmentUpdates(environmentName));
     }
 
@@ -378,9 +505,10 @@ public class D365BCAdminService : IDisposable
         [Description("Optional: Set to true to select this target version for update")] bool? selected = null,
         [Description("Optional: The type of target version ('GA' or 'Preview')")] string? targetVersionType = null,
         [Description("Optional: The scheduled datetime for the update")] DateTime? selectedDateTime = null,
-        [Description("Optional: Whether to ignore the environment update window")] bool? ignoreUpdateWindow = null)
+        [Description("Optional: Whether to ignore the environment update window")] bool? ignoreUpdateWindow = null,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
 
         var request = new SetEnvironmentUpdateRequest
         {
@@ -404,9 +532,10 @@ public class D365BCAdminService : IDisposable
     public static async Task<string> get_active_sessions(
         [Description("The tenant ID (GUID) for which to get active sessions")] Guid tenantId,
         [Description("The application family (e.g., 'BusinessCentral')")] string applicationFamily,
-        [Description("The name of the environment to get active sessions for")] string environmentName)
+        [Description("The name of the environment to get active sessions for")] string environmentName,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getActiveSessions(applicationFamily, environmentName));
     }
 
@@ -415,9 +544,10 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID) for which to kill the session")] Guid tenantId,
         [Description("The application family (e.g., 'BusinessCentral')")] string applicationFamily,
         [Description("The name of the environment")] string environmentName,
-        [Description("The session ID to terminate")] int sessionId)
+        [Description("The session ID to terminate")] int sessionId,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         var result = await d365bcAdminService.killActiveSessions(applicationFamily, environmentName, sessionId);
 
         return JsonSerializer.Serialize(new { success = result.Success, sessionId = sessionId, error = result.Error }, IgnoreNullsOptions);
@@ -425,9 +555,10 @@ public class D365BCAdminService : IDisposable
 
     [McpServerTool, Description("Gets a list of notification recipients configured for Business Central environments.")]
     public static async Task<string> get_environment_notification_recipient(
-        [Description("The tenant ID (GUID) for which to get notification recipients")] Guid tenantId)
+        [Description("The tenant ID (GUID) for which to get notification recipients")] Guid tenantId,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getEnvironmentNotificationRecipient());
     }
 
@@ -435,18 +566,20 @@ public class D365BCAdminService : IDisposable
     public static async Task<string> create_environment_notification_recipient(
         [Description("The tenant ID (GUID) for which to create the notification recipient")] Guid tenantId,
         [Description("The email address of the notification recipient")] string email,
-        [Description("The full name of the notification recipient")] string name)
+        [Description("The full name of the notification recipient")] string name,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.createEnvironmentNotificationRecipient(email, name));
     }
 
     [McpServerTool, Description("Deletes a notification recipient for Business Central environments.")]
     public static async Task<string> delete_environment_notification_recipient(
         [Description("The tenant ID (GUID) for which to delete the notification recipient")] Guid tenantId,
-        [Description("The unique identifier of the notification recipient to delete")] Guid recipientId)
+        [Description("The unique identifier of the notification recipient to delete")] Guid recipientId,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         var result = await d365bcAdminService.deleteEnvironmentNotificationRecipient(recipientId);
 
         return JsonSerializer.Serialize(new { success = result.Success, recipientId = recipientId, error = result.Error }, IgnoreNullsOptions);
@@ -455,18 +588,20 @@ public class D365BCAdminService : IDisposable
     [McpServerTool, Description("Gets information about apps that are installed on a Business Central environment.")]
     public static async Task<string> get_installed_apps(
         [Description("The tenant ID (GUID) for which to get installed apps")] Guid tenantId,
-        [Description("The name of the environment to get installed apps for")] string environmentName)
+        [Description("The name of the environment to get installed apps for")] string environmentName,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getInstalledApps(environmentName));
     }
 
     [McpServerTool, Description("Gets information about new app versions that are available for apps currently installed on a Business Central environment.")]
     public static async Task<string> get_available_app_updates(
         [Description("The tenant ID (GUID) for which to get available app updates")] Guid tenantId,
-        [Description("The name of the environment to get available app updates for")] string environmentName)
+        [Description("The name of the environment to get available app updates for")] string environmentName,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         var result = await d365bcAdminService.getAvailableAppUpdates(environmentName);
 
         if (result.Success)
@@ -504,9 +639,10 @@ public class D365BCAdminService : IDisposable
         [Description("The target version to update to")] string targetVersion,
         [Description("Optional: Whether to use the environment update window")] bool? useEnvironmentUpdateWindow = null,
         [Description("Optional: Whether to allow preview versions")] bool? allowPreviewVersion = null,
-        [Description("Optional: Whether to install or update needed dependencies")] bool? installOrUpdateNeededDependencies = null)
+        [Description("Optional: Whether to install or update needed dependencies")] bool? installOrUpdateNeededDependencies = null,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
 
         var request = new UpdateAppRequest
         {
@@ -529,9 +665,10 @@ public class D365BCAdminService : IDisposable
         [Description("Whether to accept the ISV EULA (must be true for installation to proceed; defaults to true)")] bool acceptIsvEula = true,
         [Description("Optional: Target version to install; required when allowPreviewVersion is true")] string? targetVersion = null,
         [Description("Optional: Whether to allow preview versions; requires targetVersion when true")] bool allowPreviewVersion = false,
-        [Description("Optional: Locale ID language code, e.g. 'en-US'")] string? languageId = null)
+        [Description("Optional: Locale ID language code, e.g. 'en-US'")] string? languageId = null,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
 
         var request = new InstallAppRequest
         {
@@ -571,9 +708,10 @@ public class D365BCAdminService : IDisposable
         [Description("The ID of the app to uninstall")] Guid appId,
         [Description("Optional: Whether to use the environment update window")] bool? useEnvironmentUpdateWindow = null,
         [Description("Optional: Whether to uninstall dependent apps")] bool? uninstallDependents = null,
-        [Description("Optional: Whether to delete data and sync clean the extension")] bool? deleteData = null)
+        [Description("Optional: Whether to delete data and sync clean the extension")] bool? deleteData = null,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
 
         var request = new UninstallAppRequest
         {
@@ -590,9 +728,10 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID) for which to get app operations")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
         [Description("The ID of the app")] Guid appId,
-        [Description("Optional: The specific operation ID to retrieve")] Guid? operationId = null)
+        [Description("Optional: The specific operation ID to retrieve")] Guid? operationId = null,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getAppOperations(environmentName, appId, operationId));
     }
 
@@ -600,9 +739,10 @@ public class D365BCAdminService : IDisposable
     public static async Task<string> get_available_features(
         [Description("The tenant ID (GUID) for which to get available features")] Guid tenantId,
         [Description("The name of the environment to get features for")] string environmentName,
-        [Description("The company ID (GUID) for the company within the environment")] Guid companyId)
+        [Description("The company ID (GUID) for the company within the environment")] Guid companyId,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getAvailableFeatures(tenantId, environmentName, companyId));
     }
 
@@ -613,9 +753,10 @@ public class D365BCAdminService : IDisposable
         [Description("The company ID (GUID) for the company within the environment")] Guid companyId,
         [Description("The feature ID (string) to activate")] string featureId,
         [Description("Optional: Whether the feature activation should occur in the background (default: true)")] bool updateInBackground = true,
-        [Description("Optional: The date and time when the feature activation should commence in ISO 8601 format (default: current UTC time)")] DateTime? startDateTime = null)
+        [Description("Optional: The date and time when the feature activation should commence in ISO 8601 format (default: current UTC time)")] DateTime? startDateTime = null,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         var result = await d365bcAdminService.activateFeature(tenantId, environmentName, companyId, featureId, updateInBackground, startDateTime);
 
         if (result.Success)
@@ -640,9 +781,10 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID) for which to deactivate the feature")] Guid tenantId,
         [Description("The name of the environment to deactivate the feature in")] string environmentName,
         [Description("The company ID (GUID) for the company within the environment")] Guid companyId,
-        [Description("The feature ID (string) to deactivate")] string featureId)
+        [Description("The feature ID (string) to deactivate")] string featureId,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         var result = await d365bcAdminService.deactivateFeature(tenantId, environmentName, companyId, featureId);
 
         if (result.Success)
@@ -663,9 +805,10 @@ public class D365BCAdminService : IDisposable
     [McpServerTool, Description("Gets a list of companies available in a specific Business Central environment.")]
     public static async Task<string> get_environment_companies(
         [Description("The tenant ID (GUID) for which to get environment companies")] Guid tenantId,
-        [Description("The name of the environment to get companies for")] string environmentName)
+        [Description("The name of the environment to get companies for")] string environmentName,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getEnvironmentCompanies(environmentName));
     }
 
@@ -673,9 +816,10 @@ public class D365BCAdminService : IDisposable
     public static async Task<string> get_extension_deployment_status(
         [Description("The tenant ID (GUID) for which to get extension deployment status")] Guid tenantId,
         [Description("The name of the environment to get extension deployment status for")] string environmentName,
-        [Description("The company ID (GUID) for the company within the environment")] Guid companyId)
+        [Description("The company ID (GUID) for the company within the environment")] Guid companyId,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getExtensionDeploymentStatus(tenantId, environmentName, companyId));
     }
 
@@ -712,9 +856,10 @@ public class D365BCAdminService : IDisposable
         [Description("The company ID (GUID) for the company within the environment")] Guid companyId,
         [Description("The local file path to the .app file (e.g., c:\\TMP\\MyExtension_1.0.0.0.app)")] string appFilePath,
         [Description("The schedule for the extension upload (e.g., 'Current version', 'Next version')")] string schedule = "Current version",
-        [Description("The schema synchronization mode (e.g., 'Add', 'Force')")] string schemaSyncMode = "Add")
+        [Description("The schema synchronization mode (e.g., 'Add', 'Force')")] string schemaSyncMode = "Add",
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         var result = await d365bcAdminService.createPteUpload(tenantId, environmentName, companyId, appFilePath, schedule, schemaSyncMode);
 
         if (result.Success)
@@ -740,7 +885,8 @@ public class D365BCAdminService : IDisposable
         [Description("The schedule for the extension upload (e.g., 'Current version', 'Next version')")] string schedule = "Current version",
         [Description("The schema synchronization mode (e.g., 'Add', 'Force')")] string schemaSyncMode = "Add",
         [Description("Optional: Maximum time to wait for deployment to complete in seconds (default: 600)")] int maxWaitSeconds = 600,
-        [Description("Optional: Polling interval in milliseconds (default: 5000)")] int pollIntervalMs = 5000)
+        [Description("Optional: Polling interval in milliseconds (default: 5000)")] int pollIntervalMs = 5000,
+        CancellationToken cancellationToken = default)
     {
         // Validate folder
         if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
@@ -764,7 +910,7 @@ public class D365BCAdminService : IDisposable
             });
         }
 
-        var service = await CreateServiceAsync(tenantId);
+        var service = await CreateServiceAsync(tenantId, cancellationToken);
 
         var successes = new List<object>();
         var failures = new List<object>();
@@ -856,7 +1002,9 @@ public class D365BCAdminService : IDisposable
         [Description("Optional: Locale ID language code, e.g. 'en-US'")] string? languageId = null,
         [Description("Optional: For 'Immediate' deployments, wait for the install operation to finish (default: true)")] bool waitForCompletion = true,
         [Description("Optional: Maximum time to wait for each install operation in seconds (default: 600)")] int maxWaitSeconds = 600,
-        [Description("Optional: Polling interval in milliseconds (default: 5000)")] int pollIntervalMs = 5000)
+        [Description("Optional: Polling interval in milliseconds (default: 5000)")] int pollIntervalMs = 5000,
+        IProgress<ProgressNotificationValue>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         var options = BuildPteInstallOptions(deploymentSchedule, syncMode, installMissingDependencies, acceptIsvEula, languageId, out var optionsError);
         if (options == null)
@@ -880,11 +1028,12 @@ public class D365BCAdminService : IDisposable
             Log.Warn($"Unable to read metadata from {appFilePath}: {ex.Message}");
         }
 
-        var service = await CreateServiceAsync(tenantId);
+        var service = await CreateServiceAsync(tenantId, cancellationToken);
 
         ExternalDependencyResult? dependencies = null;
         if (appInfo != null)
         {
+            progress?.Report(new ProgressNotificationValue { Progress = 0, Total = 2, Message = "Checking dependencies" });
             var installed = await service.getInstalledAppsResult(environmentName);
             if (!installed.Success)
             {
@@ -909,7 +1058,9 @@ public class D365BCAdminService : IDisposable
             }
         }
 
+        progress?.Report(new ProgressNotificationValue { Progress = 1, Total = 2, Message = $"Uploading {Path.GetFileName(appFilePath)}" });
         var outcome = await service.installPteAndWait(environmentName, appFilePath, appInfo, options, waitForCompletion, maxWaitSeconds, pollIntervalMs);
+        progress?.Report(new ProgressNotificationValue { Progress = 2, Total = 2, Message = $"{Path.GetFileName(appFilePath)}: {outcome.Status}" });
         return JsonSerializer.Serialize(new
         {
             success = outcome.Status is "succeeded" or "scheduled" or "running",
@@ -930,7 +1081,9 @@ public class D365BCAdminService : IDisposable
         [Description("Whether to accept the ISV EULA, also for dependencies installed automatically (must be true for installation to proceed; defaults to true)")] bool acceptIsvEula = true,
         [Description("Optional: Locale ID language code, e.g. 'en-US'")] string? languageId = null,
         [Description("Optional: Maximum time to wait for each install operation in seconds (default: 600)")] int maxWaitSeconds = 600,
-        [Description("Optional: Polling interval in milliseconds (default: 5000)")] int pollIntervalMs = 5000)
+        [Description("Optional: Polling interval in milliseconds (default: 5000)")] int pollIntervalMs = 5000,
+        IProgress<ProgressNotificationValue>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         var options = BuildPteInstallOptions(deploymentSchedule, syncMode, installMissingDependencies, acceptIsvEula, languageId, out var optionsError);
         if (options == null)
@@ -960,7 +1113,7 @@ public class D365BCAdminService : IDisposable
             });
         }
 
-        var service = await CreateServiceAsync(tenantId);
+        var service = await CreateServiceAsync(tenantId, cancellationToken);
 
         var installedResult = await service.getInstalledAppsResult(environmentName);
         if (!installedResult.Success)
@@ -984,7 +1137,16 @@ public class D365BCAdminService : IDisposable
             }
         }
 
+        // One step for the dependency check plus one per app.
+        var totalSteps = plan.Ordered.Count + 1;
+        progress?.Report(new ProgressNotificationValue { Progress = 0, Total = totalSteps, Message = "Checking dependencies outside the folder" });
         var dependencies = await service.ensureExternalDependencies(environmentName, plan.Ordered, installedApps, options, maxWaitSeconds, pollIntervalMs);
+        progress?.Report(new ProgressNotificationValue
+        {
+            Progress = 1,
+            Total = totalSteps,
+            Message = $"Dependencies: {dependencies.Dependencies.Count(d => d.Status is "installed" or "updated")} installed or updated, {dependencies.FailedDependencyIds.Count} failed"
+        });
         if (dependencies.FatalError != null)
         {
             return JsonSerializer.Serialize(new { success = false, error = dependencies.FatalError, dependencies = dependencies.Dependencies });
@@ -996,20 +1158,23 @@ public class D365BCAdminService : IDisposable
 
         foreach (var app in plan.Ordered)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var blockingDependency = app.Dependencies.FirstOrDefault(d => blockedAppIds.Contains(d.Id));
             if (blockingDependency != null)
             {
                 blockedAppIds.Add(app.Id);
                 results.Add(PteInstallOutcome.Skipped(app, $"Skipped because dependency '{blockingDependency.Name}' ({blockingDependency.Id}) did not install successfully"));
+                ReportAppProgress(progress, results, totalSteps);
                 continue;
             }
 
             Log.Debug($"Installing PTE {app.Name} {app.Version} from {app.FilePath}");
 
             // Long folder runs can outlive a token; the cache refreshes it when close to expiry.
-            service.SetAccessToken(await AcquireTokenAsync(tenantId));
+            service.SetAccessToken(await AcquireTokenAsync(tenantId, cancellationToken));
             var outcome = await service.installPteAndWait(environmentName, app.FilePath, app, options, waitForCompletion: true, maxWaitSeconds, pollIntervalMs);
             results.Add(outcome);
+            ReportAppProgress(progress, results, totalSteps);
 
             if (outcome.Status is not ("succeeded" or "scheduled"))
             {
@@ -1043,9 +1208,10 @@ public class D365BCAdminService : IDisposable
     [McpServerTool, Description("Lists the scheduled Per-Tenant Extension (PTE) installs and updates for a Business Central environment (Admin Center API v2.29+).")]
     public static async Task<string> get_scheduled_pte_operations(
         [Description("The tenant ID (GUID)")] Guid tenantId,
-        [Description("The name of the environment")] string environmentName)
+        [Description("The name of the environment")] string environmentName,
+        CancellationToken cancellationToken = default)
     {
-        var service = await CreateServiceAsync(tenantId);
+        var service = await CreateServiceAsync(tenantId, cancellationToken);
         var result = await service.getScheduledPteOperations(environmentName);
 
         if (result.Success)
@@ -1062,7 +1228,8 @@ public class D365BCAdminService : IDisposable
         [Description("The name of the environment")] string environmentName,
         [Description("The ID of the app whose scheduled version should be removed")] Guid appId,
         [Description("The scheduled version to remove (e.g., '2.0.0.0')")] string targetVersion,
-        [Description("The schedule of the operation to cancel: 'UpdateWindow', 'NextMinorUpdate' or 'NextMajorUpdate'")] string scheduleKind)
+        [Description("The schedule of the operation to cancel: 'UpdateWindow', 'NextMinorUpdate' or 'NextMajorUpdate'")] string scheduleKind,
+        CancellationToken cancellationToken = default)
     {
         var normalizedKind = NormalizePteValue(scheduleKind, PteScheduledKinds);
         if (normalizedKind == null)
@@ -1075,7 +1242,7 @@ public class D365BCAdminService : IDisposable
             return JsonSerializer.Serialize(new { success = false, error = "targetVersion is required" });
         }
 
-        var service = await CreateServiceAsync(tenantId);
+        var service = await CreateServiceAsync(tenantId, cancellationToken);
         var result = await service.removeScheduledPteVersion(environmentName, appId, new RemoveScheduledPteVersionRequest
         {
             TargetVersion = targetVersion.Trim(),
@@ -1088,6 +1255,17 @@ public class D365BCAdminService : IDisposable
         }
 
         return JsonSerializer.Serialize(new { success = false, error = result.Error });
+    }
+
+    private static void ReportAppProgress(IProgress<ProgressNotificationValue>? progress, List<PteInstallOutcome> results, int totalSteps)
+    {
+        var last = results[^1];
+        progress?.Report(new ProgressNotificationValue
+        {
+            Progress = results.Count + 1,
+            Total = totalSteps,
+            Message = $"{last.Name ?? last.File}: {last.Status}"
+        });
     }
 
     internal static PteInstallOptions? BuildPteInstallOptions(string deploymentSchedule, string syncMode, bool installOrUpdateNeededDependencies, bool acceptIsvEula, string? languageId, out string? error)
@@ -1383,7 +1561,7 @@ public class D365BCAdminService : IDisposable
         {
             installResult = await installPte(environmentName, appFilePath, options);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return PteInstallOutcome.Failed(appFilePath, appInfo, null, ex.Message);
         }
@@ -1429,9 +1607,10 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID) for which to get the extension upload")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
         [Description("The company ID (GUID) for the company within the environment")] Guid companyId,
-        [Description("The extension upload ID (systemId) to retrieve")] string extensionUploadId)
+        [Description("The extension upload ID (systemId) to retrieve")] string extensionUploadId,
+        CancellationToken cancellationToken = default)
     {
-        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         var uploadResponse = await d365bcAdminService.getExtensionUpload(tenantId, environmentName, companyId, extensionUploadId);
 
         if (uploadResponse != null)
@@ -1475,19 +1654,27 @@ public class D365BCAdminService : IDisposable
     [McpServerTool, Description("Clears the cached authentication token for the specified tenant, forcing a new login on the next API call.")]
     public static Task<string> clear_cached_token([Description("The tenant ID (GUID) for which to clear the cached token")] Guid tenantId)
     {
+        bool removed;
         lock (_tokenCacheLock)
         {
-            if (_tokenCache.Remove(tenantId))
-            {
-                Log.Debug($"Cleared cached token for tenant {tenantId}");
-                return Task.FromResult(JsonSerializer.Serialize(new { success = true, message = $"Token cleared for tenant {tenantId}" }));
-            }
-            else
-            {
-                Log.Warn($"No cached token found for tenant {tenantId}");
-                return Task.FromResult(JsonSerializer.Serialize(new { success = false, message = $"No cached token found for tenant {tenantId}" }));
-            }
+            removed = _tokenCache.Remove(tenantId) | _credentials.Remove(tenantId);
         }
+
+        var recordPath = AuthenticationRecordPath(tenantId);
+        if (File.Exists(recordPath))
+        {
+            File.Delete(recordPath);
+            removed = true;
+        }
+
+        if (removed)
+        {
+            Log.Debug($"Cleared cached token and saved sign-in for tenant {tenantId}");
+            return Task.FromResult(JsonSerializer.Serialize(new { success = true, message = $"Token and saved sign-in cleared for tenant {tenantId}: the next call signs in again" }));
+        }
+
+        Log.Warn($"No cached token found for tenant {tenantId}");
+        return Task.FromResult(JsonSerializer.Serialize(new { success = false, message = $"No cached token found for tenant {tenantId}" }));
     }
 
     [McpServerTool, Description("Shows the status of cached authentication tokens for all tenants.")]
@@ -1619,12 +1806,16 @@ public class D365BCAdminService : IDisposable
 
     private Task<ApiResult<T>> SendAsync<T>(HttpMethod method, string url, object? body = null)
     {
-        var request = CreateAuthenticatedRequest(method, url);
-        if (body != null)
+        var json = body == null ? null : JsonSerializer.Serialize(body, IgnoreNullsOptions);
+        return SendAsync<T>(() =>
         {
-            request.Content = new StringContent(JsonSerializer.Serialize(body, IgnoreNullsOptions), System.Text.Encoding.UTF8, "application/json");
-        }
-        return SendAsync<T>(request);
+            var request = CreateAuthenticatedRequest(method, url);
+            if (json != null)
+            {
+                request.Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+            }
+            return request;
+        });
     }
 
     // For endpoints whose success response has no meaningful body (204, empty 200/202).
@@ -1636,26 +1827,77 @@ public class D365BCAdminService : IDisposable
             : new ApiResult<bool> { StatusCode = result.StatusCode, Error = result.Error, ErrorBody = result.ErrorBody };
     }
 
-    private async Task<ApiResult<T>> SendAsync<T>(HttpRequestMessage request)
+    internal const int MaxAttempts = 3;
+    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(60);
+    internal static Func<TimeSpan, CancellationToken, Task> RetryDelay { get; set; } = Task.Delay;
+
+    // The request is rebuilt for every attempt because an HttpRequestMessage cannot be sent twice.
+    private async Task<ApiResult<T>> SendAsync<T>(Func<HttpRequestMessage> createRequest)
     {
-        using (request)
+        for (var attempt = 1; ; attempt++)
         {
+            using var request = createRequest();
+            // A failed network call or gateway timeout may have reached the service: only reads are safe to repeat.
+            var canRepeat = attempt < MaxAttempts && request.Method == HttpMethod.Get;
             Log.Debug($"{request.Method} {request.RequestUri}");
+
+            HttpResponseMessage response;
             try
             {
-                using var response = await staticHttpClient.SendAsync(request);
-                Log.Debug($"{request.Method} {request.RequestUri} -> {(int)response.StatusCode}");
-                return await ReadApiResult<T>(response);
+                response = await staticHttpClient.SendAsync(request, CancellationToken);
             }
             catch (HttpRequestException ex)
             {
-                return new ApiResult<T> { Error = $"Request to {request.RequestUri} failed: {ex.Message}" };
+                if (!canRepeat)
+                {
+                    return new ApiResult<T> { Error = $"Request to {request.RequestUri} failed: {ex.Message}" };
+                }
+                await WaitBeforeRetry(request, $"failed ({ex.Message})", BackoffDelay(attempt), attempt);
+                continue;
             }
-            catch (TaskCanceledException)
+            catch (TaskCanceledException) when (!CancellationToken.IsCancellationRequested)
             {
-                return new ApiResult<T> { Error = $"Request to {request.RequestUri} timed out" };
+                if (!canRepeat)
+                {
+                    return new ApiResult<T> { Error = $"Request to {request.RequestUri} timed out after {staticHttpClient.Timeout.TotalSeconds:0} seconds" };
+                }
+                await WaitBeforeRetry(request, "timed out", BackoffDelay(attempt), attempt);
+                continue;
+            }
+
+            using (response)
+            {
+                Log.Debug($"{request.Method} {request.RequestUri} -> {(int)response.StatusCode}");
+                var throttled = response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable;
+                var gatewayError = response.StatusCode is HttpStatusCode.BadGateway or HttpStatusCode.GatewayTimeout;
+                if (attempt < MaxAttempts && (throttled || (gatewayError && canRepeat)))
+                {
+                    await WaitBeforeRetry(request, $"returned {(int)response.StatusCode}", RetryAfterDelay(response) ?? BackoffDelay(attempt), attempt);
+                    continue;
+                }
+
+                return await ReadApiResult<T>(response);
             }
         }
+    }
+
+    private async Task WaitBeforeRetry(HttpRequestMessage request, string reason, TimeSpan delay, int attempt)
+    {
+        Log.Warn($"{request.Method} {request.RequestUri} {reason}; retrying in {delay.TotalSeconds:0.#}s (attempt {attempt + 1}/{MaxAttempts})");
+        await RetryDelay(delay, CancellationToken);
+    }
+
+    private static TimeSpan BackoffDelay(int attempt) => TimeSpan.FromSeconds(2 * Math.Pow(2, attempt - 1));
+
+    internal static TimeSpan? RetryAfterDelay(HttpResponseMessage response)
+    {
+        var retryAfter = response.Headers.RetryAfter;
+        var delay = retryAfter?.Delta ?? (retryAfter?.Date is { } date ? date - DateTimeOffset.UtcNow : null);
+        if (delay == null)
+        {
+            return null;
+        }
+        return delay < TimeSpan.Zero ? TimeSpan.Zero : delay > MaxRetryDelay ? MaxRetryDelay : delay;
     }
 
     private static async Task<ApiResult<T>> ReadApiResult<T>(HttpResponseMessage response)
@@ -1990,22 +2232,28 @@ public class D365BCAdminService : IDisposable
 
     public async Task<ApiResult<PteOperation>> installPte(string environmentName, string appFilePath, PteInstallOptions options)
     {
-        var form = new MultipartFormDataContent();
-        var fileContent = new ByteArrayContent(await File.ReadAllBytesAsync(appFilePath));
-        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-        form.Add(fileContent, "extensionFile", Path.GetFileName(appFilePath));
-        form.Add(new StringContent(options.DeploymentSchedule), "deploymentSchedule");
-        form.Add(new StringContent(options.SyncMode), "syncMode");
-        form.Add(new StringContent(options.AcceptIsvEula ? "true" : "false"), "acceptIsvEula");
-        form.Add(new StringContent(options.InstallOrUpdateNeededDependencies ? "true" : "false"), "installOrUpdateNeededDependencies");
-        if (!string.IsNullOrWhiteSpace(options.LanguageId))
-        {
-            form.Add(new StringContent(options.LanguageId), "languageId");
-        }
+        var fileBytes = await File.ReadAllBytesAsync(appFilePath, CancellationToken);
+        var url = $"{EnvironmentUrl(environmentName)}/apps/pteInstall";
 
-        var request = CreateAuthenticatedRequest(HttpMethod.Post, $"{EnvironmentUrl(environmentName)}/apps/pteInstall");
-        request.Content = form;
-        return await SendAsync<PteOperation>(request);
+        return await SendAsync<PteOperation>(() =>
+        {
+            var form = new MultipartFormDataContent();
+            var fileContent = new ByteArrayContent(fileBytes);
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            form.Add(fileContent, "extensionFile", Path.GetFileName(appFilePath));
+            form.Add(new StringContent(options.DeploymentSchedule), "deploymentSchedule");
+            form.Add(new StringContent(options.SyncMode), "syncMode");
+            form.Add(new StringContent(options.AcceptIsvEula ? "true" : "false"), "acceptIsvEula");
+            form.Add(new StringContent(options.InstallOrUpdateNeededDependencies ? "true" : "false"), "installOrUpdateNeededDependencies");
+            if (!string.IsNullOrWhiteSpace(options.LanguageId))
+            {
+                form.Add(new StringContent(options.LanguageId), "languageId");
+            }
+
+            var request = CreateAuthenticatedRequest(HttpMethod.Post, url);
+            request.Content = form;
+            return request;
+        });
     }
 
     public Task<ApiResult<ScheduledPteOperationsResponse>> getScheduledPteOperations(string environmentName) =>
@@ -2038,7 +2286,7 @@ public class D365BCAdminService : IDisposable
                 Log.Warn($"Polling operation {operationId} failed: {result.Error}");
             }
 
-            await Task.Delay(pollIntervalMs);
+            await Task.Delay(pollIntervalMs, CancellationToken);
         }
 
         return (lastOperation, true, lastError);
@@ -2430,7 +2678,7 @@ public class D365BCAdminService : IDisposable
             }
             
             // Wait before next poll
-            await Task.Delay(pollIntervalMs);
+            await Task.Delay(pollIntervalMs, CancellationToken);
         }
         
         Log.Debug($"Deployment polling timeout after {maxWaitSeconds} seconds");
