@@ -260,7 +260,7 @@ public class D365BCAdminService : IDisposable
     #region MCP Tools
 
     // The token itself is never returned: it would end up in the model context and chat history.
-    [McpServerTool, Description("Signs in to Microsoft Entra ID for the specified tenant (Azure CLI / managed identity, falling back to interactive browser login) and caches the token used by all other tools. Returns the authentication status and expiry, not the token.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Signs in to Microsoft Entra ID for the specified tenant (Azure CLI / managed identity, falling back to interactive browser login) and caches the token used by all other tools. Returns the authentication status and expiry, not the token.")]
     public static async Task<string> get_microsoft_entra_id_token([Description("The tenant ID (GUID) to sign in to")] Guid tenantId, CancellationToken cancellationToken = default)
     {
         bool fromCache;
@@ -296,7 +296,7 @@ public class D365BCAdminService : IDisposable
         });
     }
 
-    [McpServerTool, Description("Retrieves the tenant ID (GUID) for a given tenant name by querying the Azure AD well-known configuration endpoint.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Retrieves the tenant ID (GUID) for a given tenant name by querying the Azure AD well-known configuration endpoint.")]
     public static async Task<string> get_tenant_id_from_tenant_name(
         [Description("The tenant name (e.g. 'contoso.onmicrosoft.com')")] string tenantName)
     {
@@ -321,14 +321,14 @@ public class D365BCAdminService : IDisposable
         }
     }
 
-    [McpServerTool, Description("Gets environment information for a Dynamics 365 Business Central tenant.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets environment information for a Dynamics 365 Business Central tenant.")]
     public static async Task<string> get_environment_informations([Description("The tenant ID (GUID) for which to get environment information")] Guid tenantId, CancellationToken cancellationToken = default)
     {
         var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
         return ToJson(await d365bcAdminService.getEnvironmentInformations(tenantId));
     }
 
-    [McpServerTool, Description("Gets the update window settings for a specific Business Central environment.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets the update window settings for a specific Business Central environment.")]
     public static async Task<string> get_environment_update_window(
         [Description("The tenant ID (GUID) for which to get environment update window information")] Guid tenantId,
         [Description("The name of the environment to get update window for")] string environmentName,
@@ -338,7 +338,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.getEnvironmentUpdateWindow(environmentName, tenantId));
     }
 
-    [McpServerTool, Description("Sets the update window settings for a specific Business Central environment.")]
+    [McpServerTool(Destructive = false, Idempotent = true), Description("Sets the update window settings for a specific Business Central environment.")]
     public static async Task<string> set_environment_update_window(
         [Description("The tenant ID (GUID) for which to set environment update window")] Guid tenantId,
         [Description("The name of the environment to set update window for")] string environmentName,
@@ -351,7 +351,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.setEnvironmentUpdateWindow(environmentName, preferredStartTime, preferredEndTime, timeZoneId));
     }
 
-    [McpServerTool, Description("Sets the Application Insights connection string for a specific Business Central environment.")]
+    [McpServerTool(Destructive = false, Idempotent = true), Description("Sets the Application Insights connection string for a specific Business Central environment.")]
     public static async Task<string> set_environment_application_insights_connection_string(
         [Description("The tenant ID (GUID) for which to set Application Insights connection string")] Guid tenantId,
         [Description("The name of the environment to set Application Insights connection string for")] string environmentName,
@@ -364,7 +364,7 @@ public class D365BCAdminService : IDisposable
         return JsonSerializer.Serialize(response);
     }
 
-    [McpServerTool, Description("Creates a new Business Central environment. The creation is asynchronous: the returned operation can be tracked with get_environment_operations.")]
+    [McpServerTool(Destructive = false), Description("Creates a new Business Central environment. The creation is asynchronous: the returned operation can be tracked with get_environment_operations.")]
     public static async Task<string> create_new_environment(
         [Description("The tenant ID (GUID) for which to create the environment")] Guid tenantId,
         [Description("The name of the new environment to create")] string environmentName,
@@ -378,7 +378,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.createNewEnvironment(environmentName, environmentType, countryCode, ringName, applicationVersion));
     }
 
-    [McpServerTool, Description("Copies an existing Business Central environment to create a new one. The copy is asynchronous: the returned operation can be tracked with get_environment_operations.")]
+    [McpServerTool(Destructive = false), Description("Copies an existing Business Central environment to create a new one. The copy is asynchronous: the returned operation can be tracked with get_environment_operations.")]
     public static async Task<string> copy_environment(
         [Description("The tenant ID (GUID) for which to copy the environment")] Guid tenantId,
         [Description("The name of the source environment to copy from")] string sourceEnvironmentName,
@@ -390,7 +390,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.copyEnvironment(sourceEnvironmentName, newEnvironmentName, newEnvironmentType));
     }
 
-    [McpServerTool, Description("Deletes a Business Central environment. Returns HTTP status code 202 (Accepted) with operation details. Expected errors: invalidStatusCannotDeleteTenant (can't delete in current state), tenantDeletionInProgress (already being deleted), ambiguousRequest (multiple environments with same name), environmentNotFound (environment not found).")]
+    [McpServerTool(Destructive = true), Description("Deletes a Business Central environment. Returns HTTP status code 202 (Accepted) with operation details. Expected errors: invalidStatusCannotDeleteTenant (can't delete in current state), tenantDeletionInProgress (already being deleted), ambiguousRequest (multiple environments with same name), environmentNotFound (environment not found).")]
     public static async Task<string> delete_environment(
         [Description("The tenant ID (GUID) for which to delete the environment")] Guid tenantId,
         [Description("The name of the environment to delete")] string environmentName,
@@ -400,7 +400,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.deleteEnvironment(environmentName));
     }
 
-    [McpServerTool, Description("Recovers a soft-deleted Business Central environment (API v2.18+). Asynchronous: track the returned operation with get_environment_operations.")]
+    [McpServerTool(Destructive = false), Description("Recovers a soft-deleted Business Central environment (API v2.18+). Asynchronous: track the returned operation with get_environment_operations.")]
     public static async Task<string> recover_environment(
         [Description("The tenant ID (GUID)")] Guid tenantId,
         [Description("The name of the deleted environment to recover")] string environmentName,
@@ -410,7 +410,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.recoverEnvironment(environmentName));
     }
 
-    [McpServerTool, Description("Renames a Business Central environment. Integrations and URLs that use the old name stop working. Asynchronous: track the returned operation with get_environment_operations.")]
+    [McpServerTool(Destructive = true), Description("Renames a Business Central environment. Integrations and URLs that use the old name stop working. Asynchronous: track the returned operation with get_environment_operations.")]
     public static async Task<string> rename_environment(
         [Description("The tenant ID (GUID)")] Guid tenantId,
         [Description("The current name of the environment")] string environmentName,
@@ -421,7 +421,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.renameEnvironment(environmentName, newEnvironmentName));
     }
 
-    [McpServerTool, Description("Restores a Business Central environment to a point in time into a NEW environment (the source environment is not changed). Use get_available_restore_periods to find valid points in time. Asynchronous: track the returned operation with get_environment_operations.")]
+    [McpServerTool(Destructive = false), Description("Restores a Business Central environment to a point in time into a NEW environment (the source environment is not changed). Use get_available_restore_periods to find valid points in time. Asynchronous: track the returned operation with get_environment_operations.")]
     public static async Task<string> restore_environment(
         [Description("The tenant ID (GUID)")] Guid tenantId,
         [Description("The name of the environment to restore")] string environmentName,
@@ -468,7 +468,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.getEnvironmentQuotas());
     }
 
-    [McpServerTool, Description("Gets storage usage information for a specific Business Central environment.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets storage usage information for a specific Business Central environment.")]
     public static async Task<string> get_usage_storage_for_environment(
         [Description("The tenant ID (GUID) for which to get storage usage")] Guid tenantId,
         [Description("The name of the environment to get storage usage for")] string environmentName,
@@ -478,7 +478,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.getUsageStorageForEnvironment(environmentName));
     }
 
-    [McpServerTool, Description("Gets storage usage information for all Business Central environments in the tenant.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets storage usage information for all Business Central environments in the tenant.")]
     public static async Task<string> get_usage_storage_for_all_environments(
         [Description("The tenant ID (GUID) for which to get storage usage for all environments")] Guid tenantId,
         CancellationToken cancellationToken = default)
@@ -487,7 +487,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.getUsageStorageForAllEnvironments());
     }
 
-    [McpServerTool, Description("Gets information about available updates for a specific Business Central environment.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets information about available updates for a specific Business Central environment.")]
     public static async Task<string> get_environment_updates(
         [Description("The tenant ID (GUID) for which to get environment updates")] Guid tenantId,
         [Description("The name of the environment to get updates for")] string environmentName,
@@ -497,7 +497,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.getEnvironmentUpdates(environmentName));
     }
 
-    [McpServerTool, Description("Sets or schedules an update for a specific Business Central environment and target version.")]
+    [McpServerTool(Destructive = false), Description("Sets or schedules an update for a specific Business Central environment and target version.")]
     public static async Task<string> set_environment_update(
         [Description("The tenant ID (GUID) for which to set the environment update")] Guid tenantId,
         [Description("The name of the environment to update")] string environmentName,
@@ -528,7 +528,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.setEnvironmentUpdate(environmentName, targetVersion, request));
     }
 
-    [McpServerTool, Description("Gets active sessions for a specific Business Central environment.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets active sessions for a specific Business Central environment.")]
     public static async Task<string> get_active_sessions(
         [Description("The tenant ID (GUID) for which to get active sessions")] Guid tenantId,
         [Description("The application family (e.g., 'BusinessCentral')")] string applicationFamily,
@@ -539,7 +539,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.getActiveSessions(applicationFamily, environmentName));
     }
 
-    [McpServerTool, Description("Terminates and deletes an active session for a Business Central environment.")]
+    [McpServerTool(Destructive = true), Description("Terminates and deletes an active session for a Business Central environment.")]
     public static async Task<string> kill_active_sessions(
         [Description("The tenant ID (GUID) for which to kill the session")] Guid tenantId,
         [Description("The application family (e.g., 'BusinessCentral')")] string applicationFamily,
@@ -553,7 +553,7 @@ public class D365BCAdminService : IDisposable
         return JsonSerializer.Serialize(new { success = result.Success, sessionId = sessionId, error = result.Error }, IgnoreNullsOptions);
     }
 
-    [McpServerTool, Description("Gets a list of notification recipients configured for Business Central environments.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets a list of notification recipients configured for Business Central environments.")]
     public static async Task<string> get_environment_notification_recipient(
         [Description("The tenant ID (GUID) for which to get notification recipients")] Guid tenantId,
         CancellationToken cancellationToken = default)
@@ -562,7 +562,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.getEnvironmentNotificationRecipient());
     }
 
-    [McpServerTool, Description("Creates a new notification recipient for Business Central environments.")]
+    [McpServerTool(Destructive = false), Description("Creates a new notification recipient for Business Central environments.")]
     public static async Task<string> create_environment_notification_recipient(
         [Description("The tenant ID (GUID) for which to create the notification recipient")] Guid tenantId,
         [Description("The email address of the notification recipient")] string email,
@@ -573,7 +573,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.createEnvironmentNotificationRecipient(email, name));
     }
 
-    [McpServerTool, Description("Deletes a notification recipient for Business Central environments.")]
+    [McpServerTool(Destructive = true), Description("Deletes a notification recipient for Business Central environments.")]
     public static async Task<string> delete_environment_notification_recipient(
         [Description("The tenant ID (GUID) for which to delete the notification recipient")] Guid tenantId,
         [Description("The unique identifier of the notification recipient to delete")] Guid recipientId,
@@ -585,7 +585,7 @@ public class D365BCAdminService : IDisposable
         return JsonSerializer.Serialize(new { success = result.Success, recipientId = recipientId, error = result.Error }, IgnoreNullsOptions);
     }
 
-    [McpServerTool, Description("Gets information about apps that are installed on a Business Central environment.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets information about apps that are installed on a Business Central environment.")]
     public static async Task<string> get_installed_apps(
         [Description("The tenant ID (GUID) for which to get installed apps")] Guid tenantId,
         [Description("The name of the environment to get installed apps for")] string environmentName,
@@ -595,7 +595,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.getInstalledApps(environmentName));
     }
 
-    [McpServerTool, Description("Gets information about new app versions that are available for apps currently installed on a Business Central environment.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets information about new app versions that are available for apps currently installed on a Business Central environment.")]
     public static async Task<string> get_available_app_updates(
         [Description("The tenant ID (GUID) for which to get available app updates")] Guid tenantId,
         [Description("The name of the environment to get available app updates for")] string environmentName,
@@ -631,7 +631,7 @@ public class D365BCAdminService : IDisposable
         return ErrorJson(result.Error);
     }
 
-    [McpServerTool, Description("Updates an app in a Business Central environment to a specified target version.")]
+    [McpServerTool(Destructive = false), Description("Updates an app in a Business Central environment to a specified target version.")]
     public static async Task<string> update_app(
         [Description("The tenant ID (GUID) for which to update the app")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -655,7 +655,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.updateApp(environmentName, appId, request));
     }
 
-    [McpServerTool, Description("Installs an app in a Business Central environment. acceptIsvEula defaults to true, meaning you agree to the ISV terms.")]
+    [McpServerTool(Destructive = false), Description("Installs an app in a Business Central environment. acceptIsvEula defaults to true, meaning you agree to the ISV terms.")]
     public static async Task<string> install_app(
         [Description("The tenant ID (GUID) for which to install the app")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -701,7 +701,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(result);
     }
 
-    [McpServerTool, Description("Uninstalls an app from a Business Central environment.")]
+    [McpServerTool(Destructive = true), Description("Uninstalls an app from a Business Central environment.")]
     public static async Task<string> uninstall_app(
         [Description("The tenant ID (GUID) for which to uninstall the app")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -723,7 +723,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.uninstallApp(environmentName, appId, request));
     }
 
-    [McpServerTool, Description("Gets information about app install, uninstall, and update operations for a specific app.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets information about app install, uninstall, and update operations for a specific app.")]
     public static async Task<string> get_app_operations(
         [Description("The tenant ID (GUID) for which to get app operations")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -735,7 +735,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.getAppOperations(environmentName, appId, operationId));
     }
 
-    [McpServerTool, Description("Gets a list of available features and their status in the feature management of a specific Business Central environment.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets a list of available features and their status in the feature management of a specific Business Central environment.")]
     public static async Task<string> get_available_features(
         [Description("The tenant ID (GUID) for which to get available features")] Guid tenantId,
         [Description("The name of the environment to get features for")] string environmentName,
@@ -746,7 +746,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.getAvailableFeatures(tenantId, environmentName, companyId));
     }
 
-    [McpServerTool, Description("Activates a feature in a Business Central environment.")]
+    [McpServerTool(Destructive = false, Idempotent = true), Description("Activates a feature in a Business Central environment.")]
     public static async Task<string> activate_feature(
         [Description("The tenant ID (GUID) for which to activate the feature")] Guid tenantId,
         [Description("The name of the environment to activate the feature in")] string environmentName,
@@ -776,7 +776,7 @@ public class D365BCAdminService : IDisposable
         });
     }
 
-    [McpServerTool, Description("Deactivates a feature in a Business Central environment.")]
+    [McpServerTool(Destructive = false, Idempotent = true), Description("Deactivates a feature in a Business Central environment.")]
     public static async Task<string> deactivate_feature(
         [Description("The tenant ID (GUID) for which to deactivate the feature")] Guid tenantId,
         [Description("The name of the environment to deactivate the feature in")] string environmentName,
@@ -802,7 +802,7 @@ public class D365BCAdminService : IDisposable
         });
     }
 
-    [McpServerTool, Description("Gets a list of companies available in a specific Business Central environment.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets a list of companies available in a specific Business Central environment.")]
     public static async Task<string> get_environment_companies(
         [Description("The tenant ID (GUID) for which to get environment companies")] Guid tenantId,
         [Description("The name of the environment to get companies for")] string environmentName,
@@ -812,7 +812,7 @@ public class D365BCAdminService : IDisposable
         return ToJson(await d365bcAdminService.getEnvironmentCompanies(environmentName));
     }
 
-    [McpServerTool, Description("Gets the extension deployment status for a specific Business Central environment and company.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets the extension deployment status for a specific Business Central environment and company.")]
     public static async Task<string> get_extension_deployment_status(
         [Description("The tenant ID (GUID) for which to get extension deployment status")] Guid tenantId,
         [Description("The name of the environment to get extension deployment status for")] string environmentName,
@@ -849,7 +849,7 @@ public class D365BCAdminService : IDisposable
     //     return JsonSerializer.Serialize(new { success = false, error = "Unable to create extension upload" });
     // }
 
-    [McpServerTool, Description("DEPRECATED: uses the Automation API, whose PTE upload is being removed in 2027 release wave 1. Prefer install_pte. Creates a Per-Tenant Extension (PTE) upload task and uploads the extension content (.app file) in a single operation.")]
+    [McpServerTool(Destructive = false), Description("DEPRECATED: uses the Automation API, whose PTE upload is being removed in 2027 release wave 1. Prefer install_pte. Creates a Per-Tenant Extension (PTE) upload task and uploads the extension content (.app file) in a single operation.")]
     public static async Task<string> create_pte_upload(
         [Description("The tenant ID (GUID) for which to create the PTE upload")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -876,7 +876,7 @@ public class D365BCAdminService : IDisposable
         return JsonSerializer.Serialize(new { success = false, error = result.Error });
     }
 
-    [McpServerTool, Description("DEPRECATED: uses the Automation API, whose PTE upload is being removed in 2027 release wave 1. Prefer install_ptes_from_folder. Creates Per-Tenant Extension uploads for all .app files in a folder sequentially, waiting for each deployment to complete before processing the next file.")]
+    [McpServerTool(Destructive = false), Description("DEPRECATED: uses the Automation API, whose PTE upload is being removed in 2027 release wave 1. Prefer install_ptes_from_folder. Creates Per-Tenant Extension uploads for all .app files in a folder sequentially, waiting for each deployment to complete before processing the next file.")]
     public static async Task<string> create_pte_uploads_from_folder(
         [Description("The tenant ID (GUID) for which to create the PTE uploads")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -990,7 +990,7 @@ public class D365BCAdminService : IDisposable
         "They are installed immediately (even for scheduled deployments) at the latest version available for the environment, not the minimum declared. " +
         "If false, the tool stops before uploading and lists the missing dependencies. Defaults to true.";
 
-    [McpServerTool, Description("Uploads a Per-Tenant Extension (.app file, max 50 MB) through the Admin Center API (v2.29+) and installs or updates it immediately or on a schedule. Dependencies that are missing or outdated in the environment (e.g. AppSource apps) are installed or updated first. Requires an Admin Center role (e.g. Dynamics 365 Business Central Administrator). With deploymentSchedule 'Immediate' it waits for the install operation to finish.")]
+    [McpServerTool(Destructive = false), Description("Uploads a Per-Tenant Extension (.app file, max 50 MB) through the Admin Center API (v2.29+) and installs or updates it immediately or on a schedule. Dependencies that are missing or outdated in the environment (e.g. AppSource apps) are installed or updated first. Requires an Admin Center role (e.g. Dynamics 365 Business Central Administrator). With deploymentSchedule 'Immediate' it waits for the install operation to finish.")]
     public static async Task<string> install_pte(
         [Description("The tenant ID (GUID)")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -1070,7 +1070,7 @@ public class D365BCAdminService : IDisposable
         });
     }
 
-    [McpServerTool, Description("Uploads and installs all Per-Tenant Extension .app files in a folder through the Admin Center API (v2.29+). Apps are ordered by the dependencies declared in their manifest (app.json / NavxManifest.xml), so an app is always uploaded after the apps it depends on. Dependencies outside the folder that are missing or outdated in the environment (e.g. AppSource apps) are installed or updated first. With 'Immediate' each install is awaited before the next one; if an app or dependency fails, apps depending on it are skipped. All files are validated before anything is uploaded. Requires an Admin Center role.")]
+    [McpServerTool(Destructive = false), Description("Uploads and installs all Per-Tenant Extension .app files in a folder through the Admin Center API (v2.29+). Apps are ordered by the dependencies declared in their manifest (app.json / NavxManifest.xml), so an app is always uploaded after the apps it depends on. Dependencies outside the folder that are missing or outdated in the environment (e.g. AppSource apps) are installed or updated first. With 'Immediate' each install is awaited before the next one; if an app or dependency fails, apps depending on it are skipped. All files are validated before anything is uploaded. Requires an Admin Center role.")]
     public static async Task<string> install_ptes_from_folder(
         [Description("The tenant ID (GUID)")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -1205,7 +1205,7 @@ public class D365BCAdminService : IDisposable
         });
     }
 
-    [McpServerTool, Description("Lists the scheduled Per-Tenant Extension (PTE) installs and updates for a Business Central environment (Admin Center API v2.29+).")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Lists the scheduled Per-Tenant Extension (PTE) installs and updates for a Business Central environment (Admin Center API v2.29+).")]
     public static async Task<string> get_scheduled_pte_operations(
         [Description("The tenant ID (GUID)")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -1222,7 +1222,7 @@ public class D365BCAdminService : IDisposable
         return JsonSerializer.Serialize(new { success = false, error = result.Error });
     }
 
-    [McpServerTool, Description("Cancels a scheduled Per-Tenant Extension (PTE) install or update (Admin Center API v2.29+). The scheduled .app version is permanently removed from storage.")]
+    [McpServerTool(Destructive = true), Description("Cancels a scheduled Per-Tenant Extension (PTE) install or update (Admin Center API v2.29+). The scheduled .app version is permanently removed from storage.")]
     public static async Task<string> cancel_scheduled_pte(
         [Description("The tenant ID (GUID)")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -1602,7 +1602,7 @@ public class D365BCAdminService : IDisposable
         return outcome;
     }
 
-    [McpServerTool, Description("Retrieves the status of an extension upload task for a Business Central environment and company.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Retrieves the status of an extension upload task for a Business Central environment and company.")]
     public static async Task<string> get_extension_upload(
         [Description("The tenant ID (GUID) for which to get the extension upload")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -1651,7 +1651,7 @@ public class D365BCAdminService : IDisposable
     //     return JsonSerializer.Serialize(new { success = false, error = "Unable to upload extension content" });
     // }
 
-    [McpServerTool, Description("Clears the cached authentication token for the specified tenant, forcing a new login on the next API call.")]
+    [McpServerTool(Destructive = false, Idempotent = true, OpenWorld = false), Description("Clears the cached authentication token for the specified tenant, forcing a new login on the next API call.")]
     public static Task<string> clear_cached_token([Description("The tenant ID (GUID) for which to clear the cached token")] Guid tenantId)
     {
         bool removed;
@@ -1677,7 +1677,7 @@ public class D365BCAdminService : IDisposable
         return Task.FromResult(JsonSerializer.Serialize(new { success = false, message = $"No cached token found for tenant {tenantId}" }));
     }
 
-    [McpServerTool, Description("Shows the status of cached authentication tokens for all tenants.")]
+    [McpServerTool(ReadOnly = true, Idempotent = true, OpenWorld = false), Description("Shows the status of cached authentication tokens for all tenants.")]
     public static Task<string> get_token_cache_status()
     {
         lock (_tokenCacheLock)
