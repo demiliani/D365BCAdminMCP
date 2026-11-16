@@ -932,21 +932,26 @@ public class D365BCAdminService : IDisposable
         });
     }
 
-    [McpServerTool, Description("Uploads a Per-Tenant Extension (.app file, max 50 MB) through the Admin Center API (v2.29+) and installs or updates it immediately or on a schedule. Requires an Admin Center role (e.g. Dynamics 365 Business Central Administrator). With deploymentSchedule 'Immediate' it waits for the install operation to finish.")]
+    private const string InstallMissingDependenciesDescription =
+        "Whether to install or update, before uploading, the apps this extension depends on (e.g. AppSource apps) that are missing or older than the declared minimum version. " +
+        "They are installed immediately (even for scheduled deployments) at the latest version available for the environment, not the minimum declared. " +
+        "If false, the tool stops before uploading and lists the missing dependencies. Defaults to true.";
+
+    [McpServerTool, Description("Uploads a Per-Tenant Extension (.app file, max 50 MB) through the Admin Center API (v2.29+) and installs or updates it immediately or on a schedule. Dependencies that are missing or outdated in the environment (e.g. AppSource apps) are installed or updated first. Requires an Admin Center role (e.g. Dynamics 365 Business Central Administrator). With deploymentSchedule 'Immediate' it waits for the install operation to finish.")]
     public static async Task<string> install_pte(
         [Description("The tenant ID (GUID)")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
         [Description("The local file path to the .app file (e.g., c:\\TMP\\MyExtension_1.0.0.0.app)")] string appFilePath,
         [Description("When to install: 'Immediate', 'UpdateWindow', 'NextMinorUpdate' or 'NextMajorUpdate'. New PTEs (not yet installed) only accept 'Immediate' or 'UpdateWindow'.")] string deploymentSchedule = "Immediate",
         [Description("Schema sync mode: 'Add' or 'ForceSync'")] string syncMode = "Add",
-        [Description("Whether to automatically install or update the dependencies of the extension (latest compatible version, not the minimum declared)")] bool installOrUpdateNeededDependencies = false,
-        [Description("Whether to accept the ISV EULA (must be true for installation to proceed; defaults to true)")] bool acceptIsvEula = true,
+        [Description(InstallMissingDependenciesDescription)] bool installMissingDependencies = true,
+        [Description("Whether to accept the ISV EULA, also for dependencies installed automatically (must be true for installation to proceed; defaults to true)")] bool acceptIsvEula = true,
         [Description("Optional: Locale ID language code, e.g. 'en-US'")] string? languageId = null,
         [Description("Optional: For 'Immediate' deployments, wait for the install operation to finish (default: true)")] bool waitForCompletion = true,
-        [Description("Optional: Maximum time to wait for the install operation in seconds (default: 600)")] int maxWaitSeconds = 600,
+        [Description("Optional: Maximum time to wait for each install operation in seconds (default: 600)")] int maxWaitSeconds = 600,
         [Description("Optional: Polling interval in milliseconds (default: 5000)")] int pollIntervalMs = 5000)
     {
-        var options = BuildPteInstallOptions(deploymentSchedule, syncMode, installOrUpdateNeededDependencies, acceptIsvEula, languageId, out var optionsError);
+        var options = BuildPteInstallOptions(deploymentSchedule, syncMode, installMissingDependencies, acceptIsvEula, languageId, out var optionsError);
         if (options == null)
         {
             return JsonSerializer.Serialize(new { success = false, error = optionsError });
@@ -969,24 +974,58 @@ public class D365BCAdminService : IDisposable
         }
 
         var service = new D365BCAdminService(await get_microsoft_entra_id_token(tenantId));
+
+        ExternalDependencyResult? dependencies = null;
+        if (appInfo != null)
+        {
+            var installed = await service.getInstalledAppsResult(environmentName);
+            if (!installed.Success)
+            {
+                return JsonSerializer.Serialize(new { success = false, error = $"Unable to retrieve installed apps to check dependencies, nothing was uploaded: {installed.Error}" });
+            }
+
+            dependencies = await service.ensureExternalDependencies(environmentName, new List<PteAppInfo> { appInfo }, installed.Value!.Value ?? new List<InstalledApp>(), options, maxWaitSeconds, pollIntervalMs);
+            if (dependencies.FatalError != null)
+            {
+                return JsonSerializer.Serialize(new { success = false, error = dependencies.FatalError, dependencies = dependencies.Dependencies });
+            }
+
+            var failedDependency = dependencies.Dependencies.FirstOrDefault(d => dependencies.FailedDependencyIds.Contains(d.AppId));
+            if (failedDependency != null)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    result = PteInstallOutcome.Skipped(appInfo, $"Skipped because dependency '{failedDependency.Name}' ({failedDependency.AppId}) could not be installed or updated"),
+                    dependencies = dependencies.Dependencies
+                });
+            }
+        }
+
         var outcome = await service.installPteAndWait(environmentName, appFilePath, appInfo, options, waitForCompletion, maxWaitSeconds, pollIntervalMs);
-        return JsonSerializer.Serialize(outcome);
+        return JsonSerializer.Serialize(new
+        {
+            success = outcome.Status is "succeeded" or "scheduled" or "running",
+            result = outcome,
+            dependencies = dependencies?.Dependencies,
+            warning = appInfo == null ? "Unable to read the package manifest: dependencies were not checked" : null
+        });
     }
 
-    [McpServerTool, Description("Uploads and installs all Per-Tenant Extension .app files in a folder through the Admin Center API (v2.29+). Apps are ordered by the dependencies declared in their manifest (app.json / NavxManifest.xml), so an app is always uploaded after the apps it depends on. With 'Immediate' each install is awaited before the next one; if an app fails, apps depending on it are skipped. All files are validated before anything is uploaded. Requires an Admin Center role.")]
+    [McpServerTool, Description("Uploads and installs all Per-Tenant Extension .app files in a folder through the Admin Center API (v2.29+). Apps are ordered by the dependencies declared in their manifest (app.json / NavxManifest.xml), so an app is always uploaded after the apps it depends on. Dependencies outside the folder that are missing or outdated in the environment (e.g. AppSource apps) are installed or updated first. With 'Immediate' each install is awaited before the next one; if an app or dependency fails, apps depending on it are skipped. All files are validated before anything is uploaded. Requires an Admin Center role.")]
     public static async Task<string> install_ptes_from_folder(
         [Description("The tenant ID (GUID)")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
         [Description("The local folder path containing .app files (e.g., c:\\MYFOLDER)")] string folderPath,
         [Description("When to install: 'Immediate', 'UpdateWindow', 'NextMinorUpdate' or 'NextMajorUpdate'. New PTEs (not yet installed) only accept 'Immediate' or 'UpdateWindow'.")] string deploymentSchedule = "Immediate",
         [Description("Schema sync mode: 'Add' or 'ForceSync'")] string syncMode = "Add",
-        [Description("Whether to automatically install or update dependencies that are not in the folder (latest compatible version, not the minimum declared)")] bool installOrUpdateNeededDependencies = false,
-        [Description("Whether to accept the ISV EULA (must be true for installation to proceed; defaults to true)")] bool acceptIsvEula = true,
+        [Description(InstallMissingDependenciesDescription)] bool installMissingDependencies = true,
+        [Description("Whether to accept the ISV EULA, also for dependencies installed automatically (must be true for installation to proceed; defaults to true)")] bool acceptIsvEula = true,
         [Description("Optional: Locale ID language code, e.g. 'en-US'")] string? languageId = null,
         [Description("Optional: Maximum time to wait for each install operation in seconds (default: 600)")] int maxWaitSeconds = 600,
         [Description("Optional: Polling interval in milliseconds (default: 5000)")] int pollIntervalMs = 5000)
     {
-        var options = BuildPteInstallOptions(deploymentSchedule, syncMode, installOrUpdateNeededDependencies, acceptIsvEula, languageId, out var optionsError);
+        var options = BuildPteInstallOptions(deploymentSchedule, syncMode, installMissingDependencies, acceptIsvEula, languageId, out var optionsError);
         if (options == null)
         {
             return JsonSerializer.Serialize(new { success = false, error = optionsError });
@@ -1016,15 +1055,16 @@ public class D365BCAdminService : IDisposable
 
         var service = new D365BCAdminService(await get_microsoft_entra_id_token(tenantId));
 
+        var installedResult = await service.getInstalledAppsResult(environmentName);
+        if (!installedResult.Success)
+        {
+            return JsonSerializer.Serialize(new { success = false, error = $"Unable to retrieve installed apps, nothing was uploaded: {installedResult.Error}" });
+        }
+        var installedApps = installedResult.Value!.Value ?? new List<InstalledApp>();
+
         if (options.DeploymentSchedule is "NextMinorUpdate" or "NextMajorUpdate")
         {
-            var installedApps = await service.getInstalledApps(environmentName);
-            if (installedApps == null)
-            {
-                return JsonSerializer.Serialize(new { success = false, error = "Unable to retrieve installed apps to validate the deployment schedule, nothing was uploaded" });
-            }
-
-            var installedIds = installedApps.Where(a => a.Id.HasValue).Select(a => a.Id!.Value).ToHashSet();
+            var installedIds = installedApps.Where(a => a.EffectiveId.HasValue).Select(a => a.EffectiveId!.Value).ToHashSet();
             var notInstalled = plan.Ordered.Where(a => !installedIds.Contains(a.Id)).ToList();
             if (notInstalled.Count > 0)
             {
@@ -1037,8 +1077,14 @@ public class D365BCAdminService : IDisposable
             }
         }
 
+        var dependencies = await service.ensureExternalDependencies(environmentName, plan.Ordered, installedApps, options, maxWaitSeconds, pollIntervalMs);
+        if (dependencies.FatalError != null)
+        {
+            return JsonSerializer.Serialize(new { success = false, error = dependencies.FatalError, dependencies = dependencies.Dependencies });
+        }
+
         var folderAppIds = plan.Ordered.Select(a => a.Id).ToHashSet();
-        var blockedAppIds = new HashSet<Guid>();
+        var blockedAppIds = new HashSet<Guid>(dependencies.FailedDependencyIds);
         var results = new List<PteInstallOutcome>();
 
         foreach (var app in plan.Ordered)
@@ -1066,13 +1112,16 @@ public class D365BCAdminService : IDisposable
 
         return JsonSerializer.Serialize(new
         {
-            success = results.All(r => r.Status is "succeeded" or "scheduled"),
+            success = results.All(r => r.Status is "succeeded" or "scheduled") && dependencies.FailedDependencyIds.Count == 0,
             deploymentSchedule = options.DeploymentSchedule,
+            dependencies = dependencies.Dependencies,
             totalFiles = results.Count,
             succeeded = results.Count(r => r.Status == "succeeded"),
             scheduled = results.Count(r => r.Status == "scheduled"),
             failed = results.Count(r => r.Status is not ("succeeded" or "scheduled" or "skipped")),
             skipped = results.Count(r => r.Status == "skipped"),
+            dependenciesInstalled = dependencies.Dependencies.Count(d => d.Status is "installed" or "updated"),
+            dependenciesFailed = dependencies.FailedDependencyIds.Count,
             installOrder = plan.Ordered.Select(a => new
             {
                 file = Path.GetFileName(a.FilePath),
@@ -1232,6 +1281,195 @@ public class D365BCAdminService : IDisposable
         return (order.Ordered, errors);
     }
 
+    // Dependencies that are not part of the given apps must already be in the environment at the declared minimum version.
+    // Missing ones are installed and outdated ones updated (to the latest available version) before any PTE is uploaded.
+    internal async Task<ExternalDependencyResult> ensureExternalDependencies(string environmentName, List<PteAppInfo> apps, List<InstalledApp> installedApps, PteInstallOptions options, int maxWaitSeconds, int pollIntervalMs)
+    {
+        var result = new ExternalDependencyResult();
+        var ownIds = apps.Select(a => a.Id).ToHashSet();
+        var required = new Dictionary<Guid, ExternalDependencyOutcome>();
+
+        foreach (var app in apps)
+        {
+            foreach (var dep in app.Dependencies.Where(d => !ownIds.Contains(d.Id)))
+            {
+                if (!required.TryGetValue(dep.Id, out var entry))
+                {
+                    entry = new ExternalDependencyOutcome { AppId = dep.Id, Name = dep.Name, Publisher = dep.Publisher, RequiredVersion = dep.Version };
+                    required[dep.Id] = entry;
+                }
+                else if (IsLowerVersion(entry.RequiredVersion, dep.Version))
+                {
+                    entry.RequiredVersion = dep.Version;
+                }
+                entry.RequiredBy.Add(app.Name ?? Path.GetFileName(app.FilePath));
+            }
+        }
+
+        result.Dependencies = required.Values.OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase).ToList();
+
+        foreach (var dep in result.Dependencies)
+        {
+            var installed = installedApps.FirstOrDefault(a => a.EffectiveId == dep.AppId);
+            dep.InstalledVersion = installed?.Version;
+            dep.Status = installed == null ? "missing" : IsLowerVersion(installed.Version, dep.RequiredVersion) ? "outdated" : "satisfied";
+
+            if (PlatformAppIds.Contains(dep.AppId))
+            {
+                if (dep.Status == "missing")
+                {
+                    dep.Status = "satisfied";
+                    dep.Note = "Microsoft platform app, not listed by the API: assumed present";
+                }
+                else if (dep.Status == "outdated")
+                {
+                    dep.Action = "update";
+                    FailDependency(result, dep, $"The environment has {dep.Name} {dep.InstalledVersion}, but version {dep.RequiredVersion} is required. Platform apps are updated with the environment version: schedule an environment update first.");
+                }
+            }
+        }
+
+        var unsatisfied = result.Dependencies.Where(d => d.Status is "missing" or "outdated").ToList();
+        if (unsatisfied.Count == 0)
+        {
+            return result;
+        }
+
+        if (!options.InstallOrUpdateNeededDependencies)
+        {
+            result.FatalError = "Some dependencies are missing or outdated in the environment and installMissingDependencies is false. Nothing was uploaded.";
+            return result;
+        }
+
+        List<AvailableAppUpdate>? availableUpdates = null;
+        foreach (var dep in unsatisfied)
+        {
+            PteApiResult<PteOperation> request;
+            if (dep.Status == "missing")
+            {
+                dep.Action = "install";
+                Console.Error.WriteLine($"🔄 [DEBUG] Installing missing dependency {dep.Name} ({dep.AppId})");
+                request = await installGlobalApp(environmentName, dep.AppId, new InstallAppRequest
+                {
+                    AcceptIsvEula = options.AcceptIsvEula,
+                    InstallOrUpdateNeededDependencies = true,
+                    UseEnvironmentUpdateWindow = false,
+                    LanguageId = options.LanguageId
+                });
+            }
+            else
+            {
+                dep.Action = "update";
+                if (availableUpdates == null)
+                {
+                    var updates = await getAvailableAppUpdatesResult(environmentName);
+                    if (!updates.Success)
+                    {
+                        FailDependency(result, dep, $"Unable to retrieve available app updates: {updates.Error}");
+                        continue;
+                    }
+                    availableUpdates = updates.Value!.Value ?? new List<AvailableAppUpdate>();
+                }
+
+                var update = availableUpdates.FirstOrDefault(u => u.Id == dep.AppId);
+                if (update?.Version == null || IsLowerVersion(update.Version, dep.RequiredVersion))
+                {
+                    FailDependency(result, dep, $"No available update reaches version {dep.RequiredVersion}"
+                        + (update?.Version != null ? $" (latest available: {update.Version})" : string.Empty)
+                        + DependencyHint(dep));
+                    continue;
+                }
+
+                Console.Error.WriteLine($"🔄 [DEBUG] Updating dependency {dep.Name} ({dep.AppId}) from {dep.InstalledVersion} to {update.Version}");
+                request = await updateGlobalApp(environmentName, dep.AppId, new UpdateAppRequest
+                {
+                    TargetVersion = update.Version,
+                    UseEnvironmentUpdateWindow = false,
+                    InstallOrUpdateNeededDependencies = true
+                });
+            }
+
+            if (!request.Success)
+            {
+                FailDependency(result, dep, request.Error?.TrimEnd('.') + DependencyHint(dep));
+                continue;
+            }
+
+            dep.OperationId = request.Value!.Id;
+            var status = request.Value.Status;
+            var operationError = request.Value.ErrorMessage;
+
+            if (dep.OperationId != null && !PteFinalStatuses.Contains(status, StringComparer.OrdinalIgnoreCase))
+            {
+                var (operation, timedOut, pollError) = await waitForAppOperation(environmentName, dep.AppId, dep.OperationId.Value, maxWaitSeconds, pollIntervalMs);
+                if (timedOut)
+                {
+                    FailDependency(result, dep, $"The {dep.Action} operation did not complete within {maxWaitSeconds} seconds" + (pollError != null ? $" (last polling error: {pollError})" : string.Empty));
+                    continue;
+                }
+                status = operation!.Status;
+                operationError = operation.ErrorMessage;
+            }
+
+            if (!string.Equals(status, "succeeded", StringComparison.OrdinalIgnoreCase))
+            {
+                FailDependency(result, dep, $"The {dep.Action} operation ended with status '{status}'" + (string.IsNullOrWhiteSpace(operationError) ? string.Empty : $": {operationError}"));
+                continue;
+            }
+
+            dep.Status = dep.Action == "install" ? "installed" : "updated";
+        }
+
+        var refreshed = await getInstalledAppsResult(environmentName);
+        if (refreshed.Success)
+        {
+            var refreshedApps = refreshed.Value!.Value ?? new List<InstalledApp>();
+            foreach (var dep in unsatisfied.Where(d => d.Status is "installed" or "updated"))
+            {
+                var installed = refreshedApps.FirstOrDefault(a => a.EffectiveId == dep.AppId);
+                dep.InstalledVersion = installed?.Version;
+                if (installed == null || IsLowerVersion(installed.Version, dep.RequiredVersion))
+                {
+                    FailDependency(result, dep, $"After the {dep.Action} the environment has version {installed?.Version ?? "none"}, lower than the required {dep.RequiredVersion}");
+                }
+            }
+        }
+
+        return result;
+    }
+
+    // System, System Application, Business Foundation, Base Application and Application: shipped with the environment version.
+    private static readonly HashSet<Guid> PlatformAppIds = new()
+    {
+        Guid.Parse("8874ed3a-0643-4247-9ced-7a7002f7135d"),
+        Guid.Parse("63ca2fa4-4f03-4f2b-a480-172fef340d3f"),
+        Guid.Parse("f3552374-a1f2-4356-848e-196002525837"),
+        Guid.Parse("437dbf0e-84ff-417a-965d-ed2bb9650972"),
+        Guid.Parse("c1335042-3002-4257-bf8a-75c898ccb1b8")
+    };
+
+    private static void FailDependency(ExternalDependencyResult result, ExternalDependencyOutcome dep, string error)
+    {
+        dep.Status = "failed";
+        dep.Error = error;
+        result.FailedDependencyIds.Add(dep.AppId);
+    }
+
+    private static string DependencyHint(ExternalDependencyOutcome dep)
+    {
+        if (string.Equals(dep.Publisher, "Microsoft", StringComparison.OrdinalIgnoreCase) && dep.Action == "update")
+        {
+            return ". Microsoft apps are usually updated together with the environment version: consider scheduling an environment update.";
+        }
+
+        return dep.Action == "install"
+            ? ". If this dependency is a per-tenant extension, add its .app file to the folder."
+            : string.Empty;
+    }
+
+    private static bool IsLowerVersion(string? version, string? than) =>
+        Version.TryParse(than, out var target) && (!Version.TryParse(version, out var current) || current < target);
+
     internal async Task<PteInstallOutcome> installPteAndWait(string environmentName, string appFilePath, PteAppInfo? appInfo, PteInstallOptions options, bool waitForCompletion, int maxWaitSeconds, int pollIntervalMs)
     {
         PteApiResult<PteOperation> installResult;
@@ -1259,7 +1497,7 @@ public class D365BCAdminService : IDisposable
             return outcome;
         }
 
-        var (finalOperation, timedOut, pollError) = await waitForPteOperation(environmentName, appId.Value, operation.Id.Value, maxWaitSeconds, pollIntervalMs);
+        var (finalOperation, timedOut, pollError) = await waitForAppOperation(environmentName, appId.Value, operation.Id.Value, maxWaitSeconds, pollIntervalMs);
         if (timedOut)
         {
             outcome.Status = "timeout";
@@ -2207,6 +2445,48 @@ public class D365BCAdminService : IDisposable
         return await ReadPteApiResult<PteOperation>(response);
     }
 
+    private static readonly JsonSerializerOptions IgnoreNullsOptions = new() { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
+
+    public async Task<PteApiResult<InstalledAppsResponse>> getInstalledAppsResult(string environmentName)
+    {
+        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps";
+
+        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        using var response = await staticHttpClient.SendAsync(httpRequest);
+        return await ReadPteApiResult<InstalledAppsResponse>(response);
+    }
+
+    public async Task<PteApiResult<AvailableAppUpdatesResponse>> getAvailableAppUpdatesResult(string environmentName)
+    {
+        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/availableUpdates";
+
+        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        using var response = await staticHttpClient.SendAsync(httpRequest);
+        return await ReadPteApiResult<AvailableAppUpdatesResponse>(response);
+    }
+
+    public async Task<PteApiResult<PteOperation>> installGlobalApp(string environmentName, Guid appId, InstallAppRequest request)
+    {
+        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/{appId}/install";
+
+        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
+        httpRequest.Content = new StringContent(JsonSerializer.Serialize(request, IgnoreNullsOptions), System.Text.Encoding.UTF8, "application/json");
+
+        using var response = await staticHttpClient.SendAsync(httpRequest);
+        return await ReadPteApiResult<PteOperation>(response);
+    }
+
+    public async Task<PteApiResult<PteOperation>> updateGlobalApp(string environmentName, Guid appId, UpdateAppRequest request)
+    {
+        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/{appId}/update";
+
+        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
+        httpRequest.Content = new StringContent(JsonSerializer.Serialize(request, IgnoreNullsOptions), System.Text.Encoding.UTF8, "application/json");
+
+        using var response = await staticHttpClient.SendAsync(httpRequest);
+        return await ReadPteApiResult<PteOperation>(response);
+    }
+
     // The single-operation endpoint returns the operation object directly, while the list endpoint wraps it in "value".
     public async Task<PteApiResult<AppOperation>> getAppOperation(string environmentName, Guid appId, Guid operationId)
     {
@@ -2236,7 +2516,7 @@ public class D365BCAdminService : IDisposable
         return new PteApiResult<AppOperation> { StatusCode = (int)response.StatusCode, Value = element.Deserialize<AppOperation>() };
     }
 
-    public async Task<(AppOperation? Operation, bool TimedOut, string? Error)> waitForPteOperation(string environmentName, Guid appId, Guid operationId, int maxWaitSeconds, int pollIntervalMs)
+    public async Task<(AppOperation? Operation, bool TimedOut, string? Error)> waitForAppOperation(string environmentName, Guid appId, Guid operationId, int maxWaitSeconds, int pollIntervalMs)
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         AppOperation? lastOperation = null;
@@ -2302,7 +2582,16 @@ public class D365BCAdminService : IDisposable
             var message = root.TryGetProperty("message", out var m) ? m.GetString() : null;
             if (code != null || message != null)
             {
-                return $"{prefix}: {code}: {message}";
+                var description = $"{prefix}: {code}: {message}";
+                if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object
+                    && data.TryGetProperty("requirements", out var requirements) && requirements.ValueKind == JsonValueKind.Array
+                    && requirements.GetArrayLength() > 0)
+                {
+                    var items = requirements.EnumerateArray().Select(r =>
+                        $"{(r.TryGetProperty("type", out var t) ? t.GetString() : "?")} {(r.TryGetProperty("name", out var n) ? n.GetString() : "?")} {(r.TryGetProperty("version", out var v) ? v.GetString() : string.Empty)}".Trim());
+                    description += $" (requirements: {string.Join("; ", items)})";
+                }
+                return description;
             }
         }
         catch (JsonException)
