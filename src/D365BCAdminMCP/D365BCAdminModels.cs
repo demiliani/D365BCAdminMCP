@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace D365BCAdminMCP;
@@ -169,36 +170,105 @@ internal sealed partial class ApplicationInsightsKeyResponseContext : JsonSerial
 
 }
 
-public class EnvironmentCreationParameters
+// Returned by create, copy, rename, restore and recover (API v2.9+) and by the environment operations endpoints.
+public class EnvironmentOperation
 {
-    public string? SourceEnvironmentName { get; set; }
-    public string? SourceEnvironmentType { get; set; }
-    public string? DestinationEnvironmentName { get; set; }
-    public string? DestinationEnvironmentType { get; set; }
-    public string? ApplicationVersion { get; set; }
-    public string? CountryCode { get; set; }
-}
+    [JsonPropertyName("id")]
+    public Guid? Id { get; set; }
 
-public class EnvironmentCreationResponse
-{
-    public string? Id { get; set; }
+    [JsonPropertyName("type")]
     public string? Type { get; set; }
+
+    [JsonPropertyName("status")]
     public string? Status { get; set; }
+
+    [JsonPropertyName("aadTenantId")]
     public string? AadTenantId { get; set; }
+
+    [JsonPropertyName("createdOn")]
     public DateTime? CreatedOn { get; set; }
+
+    [JsonPropertyName("startedOn")]
     public DateTime? StartedOn { get; set; }
+
+    [JsonPropertyName("completedOn")]
     public DateTime? CompletedOn { get; set; }
+
+    [JsonPropertyName("createdBy")]
     public string? CreatedBy { get; set; }
+
+    [JsonPropertyName("errorMessage")]
     public string? ErrorMessage { get; set; }
-    public EnvironmentCreationParameters? Parameters { get; set; }
+
+    // Operation-specific: e.g. source/destination names for copy, old/new name for rename.
+    [JsonPropertyName("parameters")]
+    public JsonElement? Parameters { get; set; }
+
+    [JsonPropertyName("environmentName")]
     public string? EnvironmentName { get; set; }
+
+    [JsonPropertyName("environmentType")]
     public string? EnvironmentType { get; set; }
+
+    [JsonPropertyName("productFamily")]
     public string? ProductFamily { get; set; }
 }
 
-[JsonSerializable(typeof(EnvironmentCreationResponse))]
-internal sealed partial class EnvironmentCreationResponseContext : JsonSerializerContext {
+public class EnvironmentOperationsResponse
+{
+    [JsonPropertyName("value")]
+    public List<EnvironmentOperation>? Value { get; set; }
+}
 
+public class RestorePeriod
+{
+    [JsonPropertyName("from")]
+    public DateTime? From { get; set; }
+
+    [JsonPropertyName("to")]
+    public DateTime? To { get; set; }
+
+    [JsonPropertyName("correspondingApplicationPackageVersion")]
+    public string? CorrespondingApplicationPackageVersion { get; set; }
+}
+
+public class RestorePeriodsResponse
+{
+    [JsonPropertyName("value")]
+    public List<RestorePeriod>? Value { get; set; }
+}
+
+public class EnvironmentCountQuota
+{
+    [JsonPropertyName("production")]
+    public int? Production { get; set; }
+
+    [JsonPropertyName("sandbox")]
+    public int? Sandbox { get; set; }
+}
+
+public class StorageQuota
+{
+    [JsonPropertyName("default")]
+    public long? Default { get; set; }
+
+    [JsonPropertyName("userLicenses")]
+    public long? UserLicenses { get; set; }
+
+    [JsonPropertyName("additionalCapacity")]
+    public long? AdditionalCapacity { get; set; }
+
+    [JsonPropertyName("total")]
+    public long? Total { get; set; }
+}
+
+public class EnvironmentQuotas
+{
+    [JsonPropertyName("environmentsCount")]
+    public EnvironmentCountQuota? EnvironmentsCount { get; set; }
+
+    [JsonPropertyName("storageInKilobytes")]
+    public StorageQuota? StorageInKilobytes { get; set; }
 }
 
 public class EnvironmentDeletionParameters
@@ -515,6 +585,7 @@ public class InstalledApp
 
     // The API documentation names the identifier "appId" while existing responses were mapped from "id"; accept both.
     [JsonPropertyName("appId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Guid? AppId { get; set; }
 
     [JsonIgnore]
