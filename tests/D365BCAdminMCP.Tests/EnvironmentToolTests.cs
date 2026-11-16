@@ -47,11 +47,13 @@ public class EnvironmentToolTests : HttpTestBase
     [Fact]
     public async Task RenameEnvironment_PostsTheNewName()
     {
-        Api.On(HttpMethod.Post, $"{EnvironmentsPath}/Testing/rename$", HttpStatusCode.Accepted, Operation("environmentRename"));
+        Api.On(HttpMethod.Get, $"{EnvironmentsPath}/Testing$", HttpStatusCode.OK, new { name = "Testing", type = "Sandbox" })
+            .On(HttpMethod.Post, $"{EnvironmentsPath}/Testing/rename$", HttpStatusCode.Accepted, Operation("environmentRename"));
 
         var json = Parse(await D365BCAdminService.rename_environment(TenantId, "Testing", "UAT"));
 
-        Assert.Equal("UAT", Parse(Assert.Single(Api.Requests).Body!).GetProperty("NewEnvironmentName").GetString());
+        var rename = Api.Requests.Single(r => r.Method == HttpMethod.Post);
+        Assert.Equal("UAT", Parse(rename.Body!).GetProperty("NewEnvironmentName").GetString());
         Assert.Equal("environmentRename", json.GetProperty("type").GetString());
     }
 
