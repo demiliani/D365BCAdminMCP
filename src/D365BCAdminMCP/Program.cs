@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 
@@ -34,7 +35,20 @@ class Program
         builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
-            .WithToolsFromAssembly();
+            .WithToolsFromAssembly()
+            .WithRequestFilters(filters => filters.AddCallToolFilter(next => async (context, cancellationToken) =>
+            {
+                // The client gets no response for a cancelled request; without this the SDK logs the cancellation as a tool failure.
+                try
+                {
+                    return await next(context, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    Log.Info($"{context.Params?.Name} cancelled by the client");
+                    return new CallToolResult { IsError = true, Content = [new TextContentBlock { Text = "Cancelled by the client" }] };
+                }
+            }));
 
         await builder.Build().RunAsync();
         
