@@ -23,6 +23,7 @@ npm install -g @demiliani/d365bc-admin-mcp
 ### Prerequisites
 
 - **Node.js 16+** - [Download](https://nodejs.org/)
+- **Windows x64, Linux x64 or macOS on Apple Silicon** - the package ships a self-contained native server for these platforms (no .NET install needed); on other platforms build from source
 - **Dynamics 365 Business Central** - Admin access to your tenant
 - **Microsoft Entra ID** - Azure account with BC admin privileges
 
@@ -353,6 +354,27 @@ Building from source requires the [.NET 10 SDK](https://dotnet.microsoft.com/dow
 dotnet build src/D365BCAdminMCP.sln
 dotnet test src/D365BCAdminMCP.sln
 ```
+
+`npm run build` publishes the native server for your platform into `build/`, and `npm test` starts it through the npm launcher and checks the MCP handshake and the tool list.
+
+### Releasing
+
+Releases are published by [`.github/workflows/release.yml`](.github/workflows/release.yml) with [npm trusted publishing](https://docs.npmjs.com/trusted-publishers): GitHub Actions authenticates to npm with a short-lived OIDC token, so no npm token is stored anywhere, and the package gets a provenance attestation. The workflow only *stages* the package; it goes live when a maintainer approves it with 2FA.
+
+To release:
+
+1. Set the same version in `package.json` and `src/D365BCAdminMCP/D365BCAdminMCP.csproj` and merge it to `main`.
+2. Tag the merge commit and push the tag: `git tag v1.4.0 && git push origin v1.4.0`. The workflow refuses tags that don't match both versions or that point outside `main`.
+3. The workflow runs the tests, builds and smoke-tests the binaries on Windows, Linux and macOS, and stages the package on npm.
+4. Approve the staged version on npmjs.com (package page → **Staged Packages**) with 2FA, or with `npm stage approve <stage-id>`.
+5. Review and publish the draft GitHub release, which carries the binaries and their SHA-256 checksums.
+
+One-time setup:
+
+- **GitHub** → repository **Settings** → **Environments** → create `npm-publish`, and under **Deployment branches and tags** allow only tags matching `v*`. Optionally add required reviewers.
+- **GitHub** → **Settings** → **Rules** → add a tag ruleset for `v*` so only maintainers can create, update or delete release tags.
+- **npmjs.com** → package `@demiliani/d365bc-admin-mcp` → **Settings** → **Trusted Publisher** → **GitHub Actions**: organization or user `demiliani`, repository `D365BCAdminMCP`, workflow filename `release.yml`, environment `npm-publish`, allowed action **stage publish**. npm expects the first release through a new trusted publisher within 2 days of creating it.
+- After the first release goes through, set **Publishing access** to *Require two-factor authentication and disallow tokens*, and revoke any old automation tokens.
 
 ## 📄 License
 
