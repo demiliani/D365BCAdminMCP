@@ -1,0 +1,69 @@
+name: Publish to MCP Registry
+
+# Runs when a maintainer publishes the GitHub release drafted by release.yml. The registry checks that the
+# npm version is live and declares this server's mcpName, so the staged npm packages must be approved first.
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  publish:
+    name: Publish server.json
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MCP_PUBLISHER_VERSION: v1.8.9
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Check that server.json matches the release and npm has the version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          node scripts/sync-server-json.js --check
+          version=$(node -p "require('./server.json').version")
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::server.json is on $version but the release is $TAG"
+            exit 1
+          fi
+          name=$(node -p "require('./package.json').name")
+          published=$(npm view "$name@$version" mcpName 2>/dev/null || true)
+          if [ "$published" != "$(node -p "require('./package.json').mcpName")" ]; then
+            echo "::error::$name@$version is not live on npm yet. Approve the staged npm packages, then re-run this workflow."
+            exit 1
+          fi
+
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Download and verify mcp-publisher
+        run: |
+          set -euo pipefail
+          archive="mcp-publisher_linux_amd64.tar.gz"
+          base_url="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
+          curl --fail --location --silent --show-error --output "$archive" "$base_url/$archive"
+          curl --fail --location --silent --show-error --output "$archive.sigstore.json" "$base_url/$archive.sigstore.json"
+          cosign verify-blob \
+            --bundle "$archive.sigstore.json" \
+            --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/${MCP_PUBLISHER_VERSION}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$archive"
+          tar xzf "$archive" mcp-publisher
+          rm -f "$archive" "$archive.sigstore.json"
+
+      - name: Validate server.json
+        run: ./mcp-publisher validate server.json
+
+      - name: Log in with GitHub OIDC (no secret)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        run: ./mcp-publisher publish server.json
