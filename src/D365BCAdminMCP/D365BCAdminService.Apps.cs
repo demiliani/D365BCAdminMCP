@@ -43,7 +43,7 @@ public partial class D365BCAdminService
                     type = req.Type
                 }).ToArray() ?? Array.Empty<object>()
             }).ToList();
-            
+
             // Return the proper format with "value" wrapper
             var response = new { value = transformedUpdates };
             return JsonSerializer.Serialize(response);
