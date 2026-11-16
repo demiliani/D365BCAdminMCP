@@ -62,7 +62,7 @@ try {
   console.error('❌ Build failed:', error.message);
   console.error('');
   console.error('Please ensure:');
-  console.error('  1. .NET SDK 9.0 or higher is installed');
+  console.error('  1. .NET SDK 10.0 or higher is installed');
   console.error('  2. All dependencies are available');
   console.error('  3. The project builds successfully with: dotnet build');
   console.error('');

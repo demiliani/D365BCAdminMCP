@@ -366,12 +366,12 @@ sudo npm install -g @demiliani/d365bc-admin-mcp
 
 ### .NET SDK Not Found During Installation
 
-The MCP server requires .NET SDK 9.0 for building. If you see this error:
+The MCP server requires .NET SDK 10.0 for building. If you see this error:
 
 **Windows:**
 ```powershell
 # Install via winget
-winget install Microsoft.DotNet.SDK.9
+winget install Microsoft.DotNet.SDK.10
 
 # Or download from https://dotnet.microsoft.com/download
 ```
@@ -386,7 +386,7 @@ brew install --cask dotnet-sdk
 # Ubuntu/Debian
 wget https://dot.net/v1/dotnet-install.sh
 chmod +x dotnet-install.sh
-./dotnet-install.sh --channel 9.0
+./dotnet-install.sh --channel 10.0
 
 # Or follow: https://learn.microsoft.com/dotnet/core/install/linux
 ```
