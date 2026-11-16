@@ -3,19 +3,6 @@ using System.Text.Json.Serialization;
 
 namespace D365BCAdminMCP;
 
-public partial class BCExtension
-{
-    public string? ID { get; set; }
-    public string? Name { get; set; }
-    public string? Publisher { get; set; }
-    public string? Version { get; set; }    
-}
-
-[JsonSerializable(typeof(List<BCExtension>))]
-internal sealed partial class BCExtensionContext : JsonSerializerContext {
-
-}
-
 public class EnvironmentResponse
 {
     [JsonPropertyName("value")]
@@ -103,11 +90,6 @@ public class EnvironmentVersionDetails
     public DateTime? EnforcedUpdatePeriodStartDate { get; set; }
 }
 
-[JsonSerializable(typeof(EnvironmentResponse))]
-internal sealed partial class EnvironmentResponseContext : JsonSerializerContext {
-
-}
-
 public class EnvironmentUpdateWindow
 {
     [JsonPropertyName("preferredStartTime")]
@@ -127,11 +109,6 @@ public class EnvironmentUpdateWindow
     
     public Guid? TenantId { get; set; }
     public string? EnvironmentName { get; set; }
-}
-
-[JsonSerializable(typeof(EnvironmentUpdateWindow))]
-internal sealed partial class EnvironmentUpdateWindowContext : JsonSerializerContext {
-
 }
 
 public class EnvironmentUpdateWindowResponse
@@ -154,20 +131,10 @@ public class EnvironmentUpdateWindowResponse
     public DateTime? PreferredEndTimeUtc { get; set; }
 }
 
-[JsonSerializable(typeof(EnvironmentUpdateWindowResponse))]
-internal sealed partial class EnvironmentUpdateWindowResponseContext : JsonSerializerContext {
-
-}
-
 public class ApplicationInsightsKeyResponse
 {
     public bool? Success { get; set; }
     public string? Message { get; set; }
-}
-
-[JsonSerializable(typeof(ApplicationInsightsKeyResponse))]
-internal sealed partial class ApplicationInsightsKeyResponseContext : JsonSerializerContext {
-
 }
 
 // Returned by create, copy, rename, restore and recover (API v2.9+) and by the environment operations endpoints.
@@ -325,11 +292,6 @@ public class EnvironmentDeletionResponse
     public string? ProductFamily { get; set; }
 }
 
-[JsonSerializable(typeof(EnvironmentDeletionResponse))]
-internal sealed partial class EnvironmentDeletionResponseContext : JsonSerializerContext {
-
-}
-
 public class EnvironmentStorageUsage
 {
     [JsonPropertyName("environmentType")]
@@ -345,20 +307,10 @@ public class EnvironmentStorageUsage
     public long? DatabaseStorageInKilobytes { get; set; }
 }
 
-[JsonSerializable(typeof(EnvironmentStorageUsage))]
-internal sealed partial class EnvironmentStorageUsageContext : JsonSerializerContext {
-
-}
-
 public class EnvironmentStorageUsageListResponse
 {
     [JsonPropertyName("value")]
     public List<EnvironmentStorageUsage>? Value { get; set; }
-}
-
-[JsonSerializable(typeof(EnvironmentStorageUsageListResponse))]
-internal sealed partial class EnvironmentStorageUsageListResponseContext : JsonSerializerContext {
-
 }
 
 public class EnvironmentUpdateScheduleDetails
@@ -412,11 +364,6 @@ public class EnvironmentUpdatesListResponse
     public List<EnvironmentUpdateInfo>? Value { get; set; }
 }
 
-[JsonSerializable(typeof(EnvironmentUpdatesListResponse))]
-internal sealed partial class EnvironmentUpdatesListResponseContext : JsonSerializerContext {
-
-}
-
 public class SetEnvironmentUpdateScheduleDetails
 {
     [JsonPropertyName("selectedDateTime")]
@@ -448,11 +395,6 @@ public class SetEnvironmentUpdateResponse
     
     [JsonPropertyName("scheduleDetails")]
     public SetEnvironmentUpdateScheduleDetails? ScheduleDetails { get; set; }
-}
-
-[JsonSerializable(typeof(SetEnvironmentUpdateResponse))]
-internal sealed partial class SetEnvironmentUpdateResponseContext : JsonSerializerContext {
-
 }
 
 public class ActiveSession
@@ -506,11 +448,6 @@ public class ActiveSessionsResponse
     public List<ActiveSession>? Value { get; set; }
 }
 
-[JsonSerializable(typeof(ActiveSessionsResponse))]
-internal sealed partial class ActiveSessionsResponseContext : JsonSerializerContext {
-
-}
-
 public class NotificationRecipient
 {
     [JsonPropertyName("id")]
@@ -529,11 +466,6 @@ public class NotificationRecipientsResponse
     public List<NotificationRecipient>? Value { get; set; }
 }
 
-[JsonSerializable(typeof(NotificationRecipientsResponse))]
-internal sealed partial class NotificationRecipientsResponseContext : JsonSerializerContext {
-
-}
-
 public class CreateNotificationRecipientRequest
 {
     [JsonPropertyName("email")]
@@ -541,11 +473,6 @@ public class CreateNotificationRecipientRequest
     
     [JsonPropertyName("name")]
     public string? Name { get; set; }
-}
-
-[JsonSerializable(typeof(NotificationRecipient))]
-internal sealed partial class CreateNotificationRecipientResponseContext : JsonSerializerContext {
-
 }
 
 public class InstalledApp
@@ -598,11 +525,6 @@ public class InstalledAppsResponse
     public List<InstalledApp>? Value { get; set; }
 }
 
-[JsonSerializable(typeof(InstalledAppsResponse))]
-internal sealed partial class InstalledAppsResponseContext : JsonSerializerContext {
-
-}
-
 public class AppUpdateRequirement
 {
     [JsonPropertyName("id")]
@@ -643,11 +565,6 @@ public class AvailableAppUpdatesResponse
 {
     [JsonPropertyName("value")]
     public List<AvailableAppUpdate>? Value { get; set; }
-}
-
-[JsonSerializable(typeof(AvailableAppUpdatesResponse))]
-internal sealed partial class AvailableAppUpdatesResponseContext : JsonSerializerContext {
-
 }
 
 public class UpdateAppRequirement
@@ -731,11 +648,6 @@ public class UpdateAppResponse
     public string? CanceledBy { get; set; }
 }
 
-[JsonSerializable(typeof(UpdateAppResponse))]
-internal sealed partial class UpdateAppResponseContext : JsonSerializerContext {
-
-}
-
 public class InstallAppRequest
 {
     [JsonPropertyName("targetVersion")]
@@ -781,17 +693,6 @@ public class InstallAppResponse
     public string? ErrorMessage { get; set; }
 }
 
-[JsonSerializable(typeof(InstallAppResponse))]
-internal sealed partial class InstallAppResponseContext : JsonSerializerContext {
-
-}
-
-public class InstallAppResult
-{
-    public InstallAppResponse? Response { get; set; }
-    public UpdateAppErrorResponse? Error { get; set; }
-}
-
 public class UninstallAppRequest
 {
     [JsonPropertyName("useEnvironmentUpdateWindow")]
@@ -826,11 +727,6 @@ public class UninstallAppResponse
     
     [JsonPropertyName("errorMessage")]
     public string? ErrorMessage { get; set; }
-}
-
-[JsonSerializable(typeof(UninstallAppResponse))]
-internal sealed partial class UninstallAppResponseContext : JsonSerializerContext {
-
 }
 
 public class AppOperation
@@ -869,11 +765,6 @@ public class AppOperationsResponse
     public List<AppOperation>? Value { get; set; }
 }
 
-[JsonSerializable(typeof(AppOperationsResponse))]
-internal sealed partial class AppOperationsResponseContext : JsonSerializerContext {
-
-}
-
 public partial class Environment
 {
     [JsonPropertyName("name")]
@@ -899,11 +790,6 @@ public partial class Environment
     
     [JsonPropertyName("appInsightsKey")]
     public string? AppInsightsKey { get; set; }
-}
-
-[JsonSerializable(typeof(List<Environment>))]
-internal sealed partial class EnvironmentContext : JsonSerializerContext {
-
 }
 
 public class Feature
@@ -948,11 +834,6 @@ public class FeaturesResponse
     public List<Feature>? Value { get; set; }
 }
 
-[JsonSerializable(typeof(FeaturesResponse))]
-internal sealed partial class FeaturesResponseContext : JsonSerializerContext {
-
-}
-
 public class Company
 {
     [JsonPropertyName("id")]
@@ -995,11 +876,6 @@ public class CompaniesResponse
     public List<Company>? Value { get; set; }
 }
 
-[JsonSerializable(typeof(CompaniesResponse))]
-internal sealed partial class CompaniesResponseContext : JsonSerializerContext {
-
-}
-
 
 
 
@@ -1037,11 +913,6 @@ public class ExtensionDeploymentStatusResponse
     
     [JsonPropertyName("value")]
     public List<ExtensionDeploymentStatus>? Value { get; set; }
-}
-
-[JsonSerializable(typeof(ExtensionDeploymentStatusResponse))]
-internal sealed partial class ExtensionDeploymentStatusResponseContext : JsonSerializerContext {
-
 }
 
 public class ExtensionUploadRequest
@@ -1092,11 +963,6 @@ public class PteUploadResult
     public string? Schedule { get; set; }
     public string? SchemaSyncMode { get; set; }
     public string? AppName { get; set; }
-}
-
-[JsonSerializable(typeof(PteUploadResult))]
-internal sealed partial class PteUploadResultContext : JsonSerializerContext {
-
 }
 
 /// <summary>
