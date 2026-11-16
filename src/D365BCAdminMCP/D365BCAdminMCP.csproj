@@ -31,4 +31,8 @@
     <PackageReference Include="ModelContextProtocol" Version="1.1.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="D365BCAdminMCP.Tests" />
+  </ItemGroup>
+
 </Project>
