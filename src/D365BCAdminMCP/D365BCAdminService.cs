@@ -12,6 +12,9 @@ namespace D365BCAdminMCP;
 [McpServerToolType]
 public class D365BCAdminService : IDisposable
 {
+    private const string AdminApiVersion = "v2.29";
+    private const string AdminApiBaseUrl = "https://api.businesscentral.dynamics.com/admin/" + AdminApiVersion;
+
     // Static shared HttpClient for all instances (best practice to avoid socket exhaustion)
     private static readonly HttpClient staticHttpClient = new HttpClient();
     private string? _accessToken;
@@ -1123,7 +1126,7 @@ public class D365BCAdminService : IDisposable
         await EnsureAuthenticated(tenantId ?? Guid.Empty);
         
         // Use the same API endpoint that works in PowerShell - don't filter by tenant ID in query
-        var url = "https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments";
+        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments";
         Console.WriteLine($"� [DEBUG] Making API call to: {url}");
         
         var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
@@ -1182,7 +1185,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<EnvironmentUpdateWindow?> getEnvironmentUpdateWindow(string environmentName, Guid tenantId)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/settings/upgrade";
+        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/settings/upgrade";
         var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
         var response = await staticHttpClient.SendAsync(httpRequest);
 
@@ -1202,7 +1205,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<EnvironmentUpdateWindowResponse?> setEnvironmentUpdateWindow(string environmentName, string preferredStartTime, string preferredEndTime, string timeZoneId)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/BusinessCentral/environments/{environmentName}/settings/upgrade";
+        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{environmentName}/settings/upgrade";
 
         // Use the new wall-time + timezone format (API v2.13+)
         var requestBody = new
@@ -1243,7 +1246,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<ApplicationInsightsKeyResponse?> setEnvironmentApplicationInsightsConnectionString(string environmentName, string appInsightsKey)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/settings/appinsightskey";
+        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/settings/appinsightskey";
 
         var requestBody = new
         {
@@ -1270,7 +1273,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<EnvironmentCreationResponse?> createNewEnvironment(string environmentName, string environmentType, string countryCode)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}";
+        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}";
 
         var requestBody = new
         {
@@ -1298,7 +1301,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<EnvironmentCreationResponse?> copyEnvironment(string sourceEnvironmentName, string newEnvironmentName, string newEnvironmentType)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{newEnvironmentName}/copy";
+        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{newEnvironmentName}/copy";
 
         var requestBody = new
         {
@@ -1326,7 +1329,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<EnvironmentDeletionResponse?> deleteEnvironment(string environmentName)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}";
+        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}";
 
         var httpRequest = CreateAuthenticatedRequest(HttpMethod.Delete, url);
 
@@ -1343,7 +1346,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<EnvironmentStorageUsage?> getUsageStorageForEnvironment(string environmentName)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/usedstorage";
+        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/usedstorage";
         var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
         var response = await staticHttpClient.SendAsync(httpRequest);
 
@@ -1358,7 +1361,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<List<EnvironmentStorageUsage>?> getUsageStorageForAllEnvironments()
     {
-        var url = "https://api.businesscentral.dynamics.com/admin/v2.27/environments/usedstorage";
+        var url = $"{AdminApiBaseUrl}/environments/usedstorage";
         var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
         var response = await staticHttpClient.SendAsync(httpRequest);
 
@@ -1377,7 +1380,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<List<EnvironmentUpdateInfo>?> getEnvironmentUpdates(string environmentName)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/updates";
+        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/updates";
         var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
         var response = await staticHttpClient.SendAsync(httpRequest);
 
@@ -1396,7 +1399,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<SetEnvironmentUpdateResponse?> setEnvironmentUpdate(string environmentName, string targetVersion, SetEnvironmentUpdateRequest? request = null)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/updates/{targetVersion}";
+        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/updates/{targetVersion}";
 
         string? jsonContent = null;
         if (request != null)
@@ -1420,7 +1423,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<List<ActiveSession>?> getActiveSessions(string applicationFamily, string environmentName)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/{applicationFamily}/environments/{environmentName}/sessions";
+        var url = $"{AdminApiBaseUrl}/applications/{applicationFamily}/environments/{environmentName}/sessions";
 
         // Use GET method as per Microsoft documentation
         var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
@@ -1441,7 +1444,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<bool> killActiveSessions(string applicationFamily, string environmentName, int sessionId)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/{applicationFamily}/environments/{environmentName}/sessions/{sessionId}";
+        var url = $"{AdminApiBaseUrl}/applications/{applicationFamily}/environments/{environmentName}/sessions/{sessionId}";
 
         var httpRequest = CreateAuthenticatedRequest(HttpMethod.Delete, url);
 
@@ -1452,7 +1455,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<List<NotificationRecipient>?> getEnvironmentNotificationRecipient()
     {
-        var url = "https://api.businesscentral.dynamics.com/admin/v2.27/settings/notification/recipients";
+        var url = $"{AdminApiBaseUrl}/settings/notification/recipients";
         var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
         var response = await staticHttpClient.SendAsync(httpRequest);
 
@@ -1471,7 +1474,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<NotificationRecipient?> createEnvironmentNotificationRecipient(string email, string name)
     {
-        var url = "https://api.businesscentral.dynamics.com/admin/v2.27/settings/notification/recipients";
+        var url = $"{AdminApiBaseUrl}/settings/notification/recipients";
 
         var requestBody = new CreateNotificationRecipientRequest
         {
@@ -1499,7 +1502,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<bool> deleteEnvironmentNotificationRecipient(Guid recipientId)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/settings/notification/recipients/{recipientId}";
+        var url = $"{AdminApiBaseUrl}/settings/notification/recipients/{recipientId}";
 
         var httpRequest = CreateAuthenticatedRequest(HttpMethod.Delete, url);
 
@@ -1510,7 +1513,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<List<InstalledApp>?> getInstalledApps(string environmentName)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/apps";
+        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/apps";
         var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
         var response = await staticHttpClient.SendAsync(httpRequest);
 
@@ -1529,7 +1532,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<List<AvailableAppUpdate>?> getAvailableAppUpdates(string environmentName)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/apps/availableUpdates";
+        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/apps/availableUpdates";
         
         var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
         
@@ -1711,7 +1714,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<UpdateAppResponse?> updateApp(string environmentName, Guid appId, UpdateAppRequest request)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/apps/{appId}/update";
+        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/apps/{appId}/update";
 
         var jsonContent = JsonSerializer.Serialize(request);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
@@ -1733,7 +1736,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<InstallAppResult> installApp(string applicationFamily, string environmentName, Guid appId, InstallAppRequest request)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/{applicationFamily}/environments/{environmentName}/apps/{appId}/install";
+        var url = $"{AdminApiBaseUrl}/applications/{applicationFamily}/environments/{environmentName}/apps/{appId}/install";
 
         var jsonContent = JsonSerializer.Serialize(request);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
@@ -1760,7 +1763,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<UninstallAppResponse?> uninstallApp(string environmentName, Guid appId, UninstallAppRequest request)
     {
-        var url = $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/apps/{appId}/uninstall";
+        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/apps/{appId}/uninstall";
 
         var jsonContent = JsonSerializer.Serialize(request);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
@@ -1783,8 +1786,8 @@ public class D365BCAdminService : IDisposable
     public async Task<List<AppOperation>?> getAppOperations(string environmentName, Guid appId, Guid? operationId = null)
     {
         var url = operationId.HasValue
-            ? $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/apps/{appId}/operations/{operationId}"
-            : $"https://api.businesscentral.dynamics.com/admin/v2.27/applications/businesscentral/environments/{environmentName}/apps/{appId}/operations";
+            ? $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/apps/{appId}/operations/{operationId}"
+            : $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/apps/{appId}/operations";
 
         var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
 
