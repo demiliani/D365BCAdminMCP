@@ -28,4 +28,28 @@ public class AuthenticationTests : HttpTestBase
 
         Assert.Equal($"Bearer {Token}", Assert.Single(Api.Requests).Authorization);
     }
+
+    [Fact]
+    public async Task ClearCachedToken_ForgetsTheTokenAndThePersistedAccount()
+    {
+        using var folder = new TempFolder();
+        var originalDirectory = D365BCAdminService.AuthenticationRecordDirectory;
+        D365BCAdminService.AuthenticationRecordDirectory = folder.Path;
+        try
+        {
+            var recordPath = D365BCAdminService.AuthenticationRecordPath(TenantId);
+            File.WriteAllText(recordPath, "{}");
+
+            var json = Parse(await D365BCAdminService.clear_cached_token(TenantId));
+
+            Assert.True(json.GetProperty("success").GetBoolean());
+            Assert.False(File.Exists(recordPath));
+            var status = Parse(await D365BCAdminService.get_token_cache_status());
+            Assert.DoesNotContain(TenantId.ToString(), status.ToString());
+        }
+        finally
+        {
+            D365BCAdminService.AuthenticationRecordDirectory = originalDirectory;
+        }
+    }
 }
