@@ -10,6 +10,7 @@ A Model Context Protocol (MCP) server that enables AI assistants like Claude Des
 - 🌍 **Multi-Tenant Support** - Manage multiple Business Central tenants seamlessly
 - 💬 **Natural Language Interface** - Control BC through conversational AI commands
 - 🔒 **Secure by Design** - No credentials stored, uses Azure authentication standards
+- 🛰️ **Admin Center API v2.29** - Built on the latest Business Central Administration Center API
 
 ## 📦 Installation
 
