@@ -8,16 +8,39 @@ on:
 permissions:
   contents: read
 
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-    env:
-      DOTNET_CLI_TELEMETRY_OPTOUT: 1
-      DOTNET_NOLOGO: 1
-    steps:
-      - uses: actions/checkout@v4
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
 
-      - uses: actions/setup-dotnet@v4
+jobs:
+  format:
+    name: Check formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+
+      - name: dotnet format
+        run: dotnet format src/D365BCAdminMCP.sln --verify-no-changes
+
+  build-and-test:
+    name: Build and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
 
@@ -30,9 +53,15 @@ jobs:
       - name: Test
         run: dotnet test src/D365BCAdminMCP.sln --configuration Release --no-build --logger "trx;LogFileName=test-results.trx"
 
+      - name: Publish the trimmed server for this platform
+        run: npm run build
+
+      - name: Smoke test through the npm launcher
+        run: npm test
+
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-results
+          name: test-results-${{ matrix.os }}
           path: tests/**/TestResults/*.trx
