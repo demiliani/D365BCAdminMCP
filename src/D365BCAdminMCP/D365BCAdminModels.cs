@@ -765,7 +765,7 @@ public class AppOperationsResponse
     public List<AppOperation>? Value { get; set; }
 }
 
-public partial class Environment
+public class BcEnvironment
 {
     [JsonPropertyName("name")]
     public string? Name { get; set; }
@@ -1196,3 +1196,8 @@ public class ApiResult<T>
         : new ApiResult<TOut> { StatusCode = StatusCode, Error = Error ?? "Empty response from the Business Central API", ErrorBody = ErrorBody };
 }
 
+public class OpenIdConfiguration
+{
+    [JsonPropertyName("token_endpoint")]
+    public string? TokenEndpoint { get; set; }
+}

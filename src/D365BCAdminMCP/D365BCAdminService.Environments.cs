@@ -213,12 +213,12 @@ public partial class D365BCAdminService
         return ToJson(await d365bcAdminService.setEnvironmentUpdate(environmentName, targetVersion, request));
     }
 
-    public async Task<ApiResult<List<Environment>>> getEnvironmentInformations(Guid? tenantId = null)
+    public async Task<ApiResult<List<BcEnvironment>>> getEnvironmentInformations(Guid? tenantId = null)
     {
         await EnsureAuthenticated(tenantId ?? Guid.Empty);
 
         var result = await SendAsync<EnvironmentResponse>(HttpMethod.Get, $"{AdminApiBaseUrl}/applications/BusinessCentral/environments");
-        return result.Map(response => (response.Value ?? new List<EnvironmentData>()).Select(env => new Environment
+        return result.Map(response => (response.Value ?? new List<EnvironmentData>()).Select(env => new BcEnvironment
         {
             Name = env.Name,
             Type = env.Type,
