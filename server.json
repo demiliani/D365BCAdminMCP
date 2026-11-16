@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.demiliani/d365bc-admin-mcp",
+  "title": "Dynamics 365 Business Central Admin",
+  "description": "Administer Business Central environments, apps, PTEs, updates and exports via the Admin Center API.",
+  "websiteUrl": "https://github.com/demiliani/D365BCAdminMCP#readme",
+  "repository": {
+    "url": "https://github.com/demiliani/D365BCAdminMCP",
+    "source": "github"
+  },
+  "version": "1.3.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@demiliani/d365bc-admin-mcp",
+      "version": "1.3.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "D365BC_MCP_LOG_LEVEL",
+          "description": "Log level written to stderr",
+          "choices": ["Debug", "Information", "Warning", "Error", "None"],
+          "default": "Information"
+        },
+        {
+          "name": "D365BC_MCP_PERSIST_TOKEN_CACHE",
+          "description": "Keep the Microsoft sign-in in the encrypted OS token cache across restarts",
+          "format": "boolean",
+          "default": "true"
+        }
+      ]
+    }
+  ]
+}

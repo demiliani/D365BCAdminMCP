@@ -28,6 +28,9 @@ jobs:
       - name: dotnet format
         run: dotnet format src/D365BCAdminMCP.sln --verify-no-changes
 
+      - name: Check that server.json matches package.json
+        run: node scripts/sync-server-json.js --check
+
   build-and-test:
     name: Build and test (${{ matrix.os }})
     strategy:

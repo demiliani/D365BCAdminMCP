@@ -49,6 +49,7 @@ jobs:
             echo "::error::Tag $TAG points to a commit that is not on main"
             exit 1
           fi
+          node scripts/sync-server-json.js --check
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if [[ "$version" == *-* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
 
