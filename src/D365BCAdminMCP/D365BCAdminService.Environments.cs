@@ -75,13 +75,21 @@ public partial class D365BCAdminService
         return ToJson(await d365bcAdminService.copyEnvironment(sourceEnvironmentName, newEnvironmentName, newEnvironmentType));
     }
 
-    [McpServerTool(Destructive = true), Description("Deletes a Business Central environment. Returns HTTP status code 202 (Accepted) with operation details. Expected errors: invalidStatusCannotDeleteTenant (can't delete in current state), tenantDeletionInProgress (already being deleted), ambiguousRequest (multiple environments with same name), environmentNotFound (environment not found).")]
+    [McpServerTool(Destructive = true), Description("Deletes a Business Central environment. Production environments require the user to confirm by typing the environment name. Returns HTTP status code 202 (Accepted) with operation details. Expected errors: invalidStatusCannotDeleteTenant (can't delete in current state), tenantDeletionInProgress (already being deleted), ambiguousRequest (multiple environments with same name), environmentNotFound (environment not found).")]
     public static async Task<string> delete_environment(
         [Description("The tenant ID (GUID) for which to delete the environment")] Guid tenantId,
         [Description("The name of the environment to delete")] string environmentName,
+        [Description(ConfirmEnvironmentNameDescription)] string? confirmEnvironmentName = null,
+        McpServer? server = null,
         CancellationToken cancellationToken = default)
     {
         var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
+        var refusal = await d365bcAdminService.ConfirmProductionActionAsync(environmentName, "DELETE", confirmEnvironmentName, ConfirmationPrompt(server));
+        if (refusal != null)
+        {
+            return refusal;
+        }
+
         return ToJson(await d365bcAdminService.deleteEnvironment(environmentName));
     }
 
@@ -95,14 +103,22 @@ public partial class D365BCAdminService
         return ToJson(await d365bcAdminService.recoverEnvironment(environmentName));
     }
 
-    [McpServerTool(Destructive = true), Description("Renames a Business Central environment. Integrations and URLs that use the old name stop working. Asynchronous: track the returned operation with get_environment_operations.")]
+    [McpServerTool(Destructive = true), Description("Renames a Business Central environment. Production environments require the user to confirm by typing the environment name. Integrations and URLs that use the old name stop working. Asynchronous: track the returned operation with get_environment_operations.")]
     public static async Task<string> rename_environment(
         [Description("The tenant ID (GUID)")] Guid tenantId,
         [Description("The current name of the environment")] string environmentName,
         [Description("The new name of the environment (max 30 characters, starts with a letter; letters, digits, '-' and '_')")] string newEnvironmentName,
+        [Description(ConfirmEnvironmentNameDescription)] string? confirmEnvironmentName = null,
+        McpServer? server = null,
         CancellationToken cancellationToken = default)
     {
         var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
+        var refusal = await d365bcAdminService.ConfirmProductionActionAsync(environmentName, $"RENAME (to '{newEnvironmentName}')", confirmEnvironmentName, ConfirmationPrompt(server));
+        if (refusal != null)
+        {
+            return refusal;
+        }
+
         return ToJson(await d365bcAdminService.renameEnvironment(environmentName, newEnvironmentName));
     }
 
