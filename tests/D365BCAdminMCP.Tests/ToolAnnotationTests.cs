@@ -8,7 +8,8 @@ public class ToolAnnotationTests
     private static readonly string[] DestructiveTools =
     {
         "delete_environment", "rename_environment", "uninstall_app", "kill_active_sessions",
-        "delete_environment_notification_recipient", "cancel_scheduled_pte"
+        "delete_environment_notification_recipient", "cancel_scheduled_pte", "set_environment_security_group",
+        "clear_environment_security_group"
     };
 
     private static readonly List<MethodInfo> Tools = typeof(D365BCAdminService)
@@ -27,7 +28,7 @@ public class ToolAnnotationTests
     [Fact]
     public void AllToolsAreRegistered()
     {
-        Assert.Equal(44, Tools.Count);
+        Assert.Equal(51, Tools.Count);
     }
 
     [Fact]
