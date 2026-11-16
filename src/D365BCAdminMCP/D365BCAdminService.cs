@@ -796,7 +796,7 @@ public class D365BCAdminService : IDisposable
     //     return JsonSerializer.Serialize(new { success = false, error = "Unable to create extension upload" });
     // }
 
-    [McpServerTool, Description("Creates a Per-Tenant Extension (PTE) upload task and uploads the extension content (.app file) in a single operation.")]
+    [McpServerTool, Description("DEPRECATED: uses the Automation API, whose PTE upload is being removed in 2027 release wave 1. Prefer install_pte. Creates a Per-Tenant Extension (PTE) upload task and uploads the extension content (.app file) in a single operation.")]
     public static async Task<string> create_pte_upload(
         [Description("The tenant ID (GUID) for which to create the PTE upload")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -823,7 +823,7 @@ public class D365BCAdminService : IDisposable
         return JsonSerializer.Serialize(new { success = false, error = result.Error });
     }
 
-    [McpServerTool, Description("Creates Per-Tenant Extension uploads for all .app files in a folder sequentially, waiting for each deployment to complete before processing the next file.")]
+    [McpServerTool, Description("DEPRECATED: uses the Automation API, whose PTE upload is being removed in 2027 release wave 1. Prefer install_ptes_from_folder. Creates Per-Tenant Extension uploads for all .app files in a folder sequentially, waiting for each deployment to complete before processing the next file.")]
     public static async Task<string> create_pte_uploads_from_folder(
         [Description("The tenant ID (GUID) for which to create the PTE uploads")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -930,6 +930,354 @@ public class D365BCAdminService : IDisposable
             successes,
             failures
         });
+    }
+
+    [McpServerTool, Description("Uploads a Per-Tenant Extension (.app file, max 50 MB) through the Admin Center API (v2.29+) and installs or updates it immediately or on a schedule. Requires an Admin Center role (e.g. Dynamics 365 Business Central Administrator). With deploymentSchedule 'Immediate' it waits for the install operation to finish.")]
+    public static async Task<string> install_pte(
+        [Description("The tenant ID (GUID)")] Guid tenantId,
+        [Description("The name of the environment")] string environmentName,
+        [Description("The local file path to the .app file (e.g., c:\\TMP\\MyExtension_1.0.0.0.app)")] string appFilePath,
+        [Description("When to install: 'Immediate', 'UpdateWindow', 'NextMinorUpdate' or 'NextMajorUpdate'. New PTEs (not yet installed) only accept 'Immediate' or 'UpdateWindow'.")] string deploymentSchedule = "Immediate",
+        [Description("Schema sync mode: 'Add' or 'ForceSync'")] string syncMode = "Add",
+        [Description("Whether to automatically install or update the dependencies of the extension (latest compatible version, not the minimum declared)")] bool installOrUpdateNeededDependencies = false,
+        [Description("Whether to accept the ISV EULA (must be true for installation to proceed; defaults to true)")] bool acceptIsvEula = true,
+        [Description("Optional: Locale ID language code, e.g. 'en-US'")] string? languageId = null,
+        [Description("Optional: For 'Immediate' deployments, wait for the install operation to finish (default: true)")] bool waitForCompletion = true,
+        [Description("Optional: Maximum time to wait for the install operation in seconds (default: 600)")] int maxWaitSeconds = 600,
+        [Description("Optional: Polling interval in milliseconds (default: 5000)")] int pollIntervalMs = 5000)
+    {
+        var options = BuildPteInstallOptions(deploymentSchedule, syncMode, installOrUpdateNeededDependencies, acceptIsvEula, languageId, out var optionsError);
+        if (options == null)
+        {
+            return JsonSerializer.Serialize(new { success = false, error = optionsError });
+        }
+
+        var fileError = ValidatePteFile(appFilePath);
+        if (fileError != null)
+        {
+            return JsonSerializer.Serialize(new { success = false, error = fileError });
+        }
+
+        PteAppInfo? appInfo = null;
+        try
+        {
+            appInfo = PtePackageReader.ReadAppInfo(appFilePath);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"⚠️ [DEBUG] Unable to read metadata from {appFilePath}: {ex.Message}");
+        }
+
+        var service = new D365BCAdminService(await get_microsoft_entra_id_token(tenantId));
+        var outcome = await service.installPteAndWait(environmentName, appFilePath, appInfo, options, waitForCompletion, maxWaitSeconds, pollIntervalMs);
+        return JsonSerializer.Serialize(outcome);
+    }
+
+    [McpServerTool, Description("Uploads and installs all Per-Tenant Extension .app files in a folder through the Admin Center API (v2.29+). Apps are ordered by the dependencies declared in their manifest (app.json / NavxManifest.xml), so an app is always uploaded after the apps it depends on. With 'Immediate' each install is awaited before the next one; if an app fails, apps depending on it are skipped. All files are validated before anything is uploaded. Requires an Admin Center role.")]
+    public static async Task<string> install_ptes_from_folder(
+        [Description("The tenant ID (GUID)")] Guid tenantId,
+        [Description("The name of the environment")] string environmentName,
+        [Description("The local folder path containing .app files (e.g., c:\\MYFOLDER)")] string folderPath,
+        [Description("When to install: 'Immediate', 'UpdateWindow', 'NextMinorUpdate' or 'NextMajorUpdate'. New PTEs (not yet installed) only accept 'Immediate' or 'UpdateWindow'.")] string deploymentSchedule = "Immediate",
+        [Description("Schema sync mode: 'Add' or 'ForceSync'")] string syncMode = "Add",
+        [Description("Whether to automatically install or update dependencies that are not in the folder (latest compatible version, not the minimum declared)")] bool installOrUpdateNeededDependencies = false,
+        [Description("Whether to accept the ISV EULA (must be true for installation to proceed; defaults to true)")] bool acceptIsvEula = true,
+        [Description("Optional: Locale ID language code, e.g. 'en-US'")] string? languageId = null,
+        [Description("Optional: Maximum time to wait for each install operation in seconds (default: 600)")] int maxWaitSeconds = 600,
+        [Description("Optional: Polling interval in milliseconds (default: 5000)")] int pollIntervalMs = 5000)
+    {
+        var options = BuildPteInstallOptions(deploymentSchedule, syncMode, installOrUpdateNeededDependencies, acceptIsvEula, languageId, out var optionsError);
+        if (options == null)
+        {
+            return JsonSerializer.Serialize(new { success = false, error = optionsError });
+        }
+
+        if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+        {
+            return JsonSerializer.Serialize(new { success = false, error = $"Folder not found: {folderPath}" });
+        }
+
+        var appFiles = Directory.GetFiles(folderPath, "*.app", SearchOption.TopDirectoryOnly);
+        if (appFiles.Length == 0)
+        {
+            return JsonSerializer.Serialize(new { success = false, error = "No .app files found in the specified folder", folder = folderPath });
+        }
+
+        var plan = PlanPteFolderInstall(appFiles);
+        if (plan.Errors.Count > 0)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = "Validation failed, nothing was uploaded",
+                validationErrors = plan.Errors
+            });
+        }
+
+        var service = new D365BCAdminService(await get_microsoft_entra_id_token(tenantId));
+
+        if (options.DeploymentSchedule is "NextMinorUpdate" or "NextMajorUpdate")
+        {
+            var installedApps = await service.getInstalledApps(environmentName);
+            if (installedApps == null)
+            {
+                return JsonSerializer.Serialize(new { success = false, error = "Unable to retrieve installed apps to validate the deployment schedule, nothing was uploaded" });
+            }
+
+            var installedIds = installedApps.Where(a => a.Id.HasValue).Select(a => a.Id!.Value).ToHashSet();
+            var notInstalled = plan.Ordered.Where(a => !installedIds.Contains(a.Id)).ToList();
+            if (notInstalled.Count > 0)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    error = $"'{options.DeploymentSchedule}' can only be used to update PTEs that are already installed. New PTEs require 'Immediate' or 'UpdateWindow'. Nothing was uploaded.",
+                    notInstalledApps = notInstalled.Select(a => new { file = Path.GetFileName(a.FilePath), appId = a.Id, name = a.Name, version = a.Version })
+                });
+            }
+        }
+
+        var folderAppIds = plan.Ordered.Select(a => a.Id).ToHashSet();
+        var blockedAppIds = new HashSet<Guid>();
+        var results = new List<PteInstallOutcome>();
+
+        foreach (var app in plan.Ordered)
+        {
+            var blockingDependency = app.Dependencies.FirstOrDefault(d => blockedAppIds.Contains(d.Id));
+            if (blockingDependency != null)
+            {
+                blockedAppIds.Add(app.Id);
+                results.Add(PteInstallOutcome.Skipped(app, $"Skipped because dependency '{blockingDependency.Name}' ({blockingDependency.Id}) did not install successfully"));
+                continue;
+            }
+
+            Console.Error.WriteLine($"🔄 [DEBUG] Installing PTE {app.Name} {app.Version} from {app.FilePath}");
+
+            // Long folder runs can outlive a token; the cache refreshes it when close to expiry.
+            service.SetAccessToken(await get_microsoft_entra_id_token(tenantId));
+            var outcome = await service.installPteAndWait(environmentName, app.FilePath, app, options, waitForCompletion: true, maxWaitSeconds, pollIntervalMs);
+            results.Add(outcome);
+
+            if (outcome.Status is not ("succeeded" or "scheduled"))
+            {
+                blockedAppIds.Add(app.Id);
+            }
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            success = results.All(r => r.Status is "succeeded" or "scheduled"),
+            deploymentSchedule = options.DeploymentSchedule,
+            totalFiles = results.Count,
+            succeeded = results.Count(r => r.Status == "succeeded"),
+            scheduled = results.Count(r => r.Status == "scheduled"),
+            failed = results.Count(r => r.Status is not ("succeeded" or "scheduled" or "skipped")),
+            skipped = results.Count(r => r.Status == "skipped"),
+            installOrder = plan.Ordered.Select(a => new
+            {
+                file = Path.GetFileName(a.FilePath),
+                name = a.Name,
+                version = a.Version,
+                dependsOn = a.Dependencies.Where(d => folderAppIds.Contains(d.Id)).Select(d => d.Name)
+            }),
+            results
+        });
+    }
+
+    [McpServerTool, Description("Lists the scheduled Per-Tenant Extension (PTE) installs and updates for a Business Central environment (Admin Center API v2.29+).")]
+    public static async Task<string> get_scheduled_pte_operations(
+        [Description("The tenant ID (GUID)")] Guid tenantId,
+        [Description("The name of the environment")] string environmentName)
+    {
+        var service = new D365BCAdminService(await get_microsoft_entra_id_token(tenantId));
+        var result = await service.getScheduledPteOperations(environmentName);
+
+        if (result.Success)
+        {
+            return JsonSerializer.Serialize(result.Value!.Value ?? new List<PteOperation>());
+        }
+
+        return JsonSerializer.Serialize(new { success = false, error = result.Error });
+    }
+
+    [McpServerTool, Description("Cancels a scheduled Per-Tenant Extension (PTE) install or update (Admin Center API v2.29+). The scheduled .app version is permanently removed from storage.")]
+    public static async Task<string> cancel_scheduled_pte(
+        [Description("The tenant ID (GUID)")] Guid tenantId,
+        [Description("The name of the environment")] string environmentName,
+        [Description("The ID of the app whose scheduled version should be removed")] Guid appId,
+        [Description("The scheduled version to remove (e.g., '2.0.0.0')")] string targetVersion,
+        [Description("The schedule of the operation to cancel: 'UpdateWindow', 'NextMinorUpdate' or 'NextMajorUpdate'")] string scheduleKind)
+    {
+        var normalizedKind = NormalizePteValue(scheduleKind, PteScheduledKinds);
+        if (normalizedKind == null)
+        {
+            return JsonSerializer.Serialize(new { success = false, error = $"Invalid scheduleKind '{scheduleKind}'. Allowed values: {string.Join(", ", PteScheduledKinds)}" });
+        }
+
+        if (string.IsNullOrWhiteSpace(targetVersion))
+        {
+            return JsonSerializer.Serialize(new { success = false, error = "targetVersion is required" });
+        }
+
+        var service = new D365BCAdminService(await get_microsoft_entra_id_token(tenantId));
+        var result = await service.removeScheduledPteVersion(environmentName, appId, new RemoveScheduledPteVersionRequest
+        {
+            TargetVersion = targetVersion.Trim(),
+            ScheduleKind = normalizedKind
+        });
+
+        if (result.Success)
+        {
+            return JsonSerializer.Serialize(new { success = true, operation = result.Value });
+        }
+
+        return JsonSerializer.Serialize(new { success = false, error = result.Error });
+    }
+
+    internal static PteInstallOptions? BuildPteInstallOptions(string deploymentSchedule, string syncMode, bool installOrUpdateNeededDependencies, bool acceptIsvEula, string? languageId, out string? error)
+    {
+        error = null;
+        var normalizedSchedule = NormalizePteValue(deploymentSchedule, PteDeploymentSchedules);
+        if (normalizedSchedule == null)
+        {
+            error = $"Invalid deploymentSchedule '{deploymentSchedule}'. Allowed values: {string.Join(", ", PteDeploymentSchedules)}";
+            return null;
+        }
+
+        var normalizedSyncMode = NormalizePteValue(syncMode, PteSyncModes);
+        if (normalizedSyncMode == null)
+        {
+            error = $"Invalid syncMode '{syncMode}'. Allowed values: {string.Join(", ", PteSyncModes)}";
+            return null;
+        }
+
+        if (!acceptIsvEula)
+        {
+            error = "acceptIsvEula must be true for the installation to proceed";
+            return null;
+        }
+
+        return new PteInstallOptions
+        {
+            DeploymentSchedule = normalizedSchedule,
+            SyncMode = normalizedSyncMode,
+            InstallOrUpdateNeededDependencies = installOrUpdateNeededDependencies,
+            AcceptIsvEula = acceptIsvEula,
+            LanguageId = string.IsNullOrWhiteSpace(languageId) ? null : languageId.Trim()
+        };
+    }
+
+    internal static string? ValidatePteFile(string appFilePath)
+    {
+        if (string.IsNullOrWhiteSpace(appFilePath) || !File.Exists(appFilePath))
+        {
+            return $"File not found: {appFilePath}";
+        }
+
+        if (!string.Equals(Path.GetExtension(appFilePath), ".app", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Not an .app file: {appFilePath}";
+        }
+
+        var size = new FileInfo(appFilePath).Length;
+        if (size > MaxPteFileSizeBytes)
+        {
+            return $"File exceeds the 50 MB limit of the Admin Center API ({size / (1024.0 * 1024.0):F1} MB): {appFilePath}";
+        }
+
+        return null;
+    }
+
+    internal static (List<PteAppInfo> Ordered, List<string> Errors) PlanPteFolderInstall(IEnumerable<string> appFiles)
+    {
+        var errors = new List<string>();
+        var apps = new List<PteAppInfo>();
+
+        foreach (var file in appFiles)
+        {
+            var fileError = ValidatePteFile(file);
+            if (fileError != null)
+            {
+                errors.Add(fileError);
+                continue;
+            }
+
+            try
+            {
+                apps.Add(PtePackageReader.ReadAppInfo(file));
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"Unable to read app metadata from {Path.GetFileName(file)}: {ex.Message}");
+            }
+        }
+
+        foreach (var duplicate in apps.GroupBy(a => a.Id).Where(g => g.Count() > 1))
+        {
+            errors.Add($"App {duplicate.First().Name} ({duplicate.Key}) appears in more than one file: {string.Join(", ", duplicate.Select(a => Path.GetFileName(a.FilePath)))}");
+        }
+
+        if (errors.Count > 0)
+        {
+            return (new List<PteAppInfo>(), errors);
+        }
+
+        var order = PtePackageReader.SortByDependencies(apps);
+        if (order.Cyclic.Count > 0)
+        {
+            errors.Add($"Circular dependency between: {string.Join(", ", order.Cyclic.Select(a => $"{a.Name} ({Path.GetFileName(a.FilePath)})"))}");
+            return (new List<PteAppInfo>(), errors);
+        }
+
+        return (order.Ordered, errors);
+    }
+
+    internal async Task<PteInstallOutcome> installPteAndWait(string environmentName, string appFilePath, PteAppInfo? appInfo, PteInstallOptions options, bool waitForCompletion, int maxWaitSeconds, int pollIntervalMs)
+    {
+        PteApiResult<PteOperation> installResult;
+        try
+        {
+            installResult = await installPte(environmentName, appFilePath, options);
+        }
+        catch (Exception ex)
+        {
+            return PteInstallOutcome.Failed(appFilePath, appInfo, null, ex.Message);
+        }
+
+        if (!installResult.Success)
+        {
+            return PteInstallOutcome.Failed(appFilePath, appInfo, null, installResult.Error);
+        }
+
+        var operation = installResult.Value!;
+        var outcome = PteInstallOutcome.FromOperation(appFilePath, appInfo, operation);
+        var appId = operation.AppId ?? appInfo?.Id;
+
+        if (options.DeploymentSchedule != "Immediate" || !waitForCompletion || operation.Id == null || appId == null
+            || string.Equals(operation.Status, "scheduled", StringComparison.OrdinalIgnoreCase))
+        {
+            return outcome;
+        }
+
+        var (finalOperation, timedOut, pollError) = await waitForPteOperation(environmentName, appId.Value, operation.Id.Value, maxWaitSeconds, pollIntervalMs);
+        if (timedOut)
+        {
+            outcome.Status = "timeout";
+            outcome.Error = $"Install operation did not complete within {maxWaitSeconds} seconds" + (pollError != null ? $" (last polling error: {pollError})" : string.Empty);
+            return outcome;
+        }
+
+        outcome.Status = finalOperation!.Status?.ToLowerInvariant();
+        if (DateTime.TryParse(finalOperation.CompletedOn, null, System.Globalization.DateTimeStyles.RoundtripKind, out var completedOn))
+        {
+            outcome.CompletedOn = completedOn;
+        }
+        if (!string.IsNullOrWhiteSpace(finalOperation.ErrorMessage))
+        {
+            outcome.Error = finalOperation.ErrorMessage;
+        }
+
+        return outcome;
     }
 
     [McpServerTool, Description("Retrieves the status of an extension upload task for a Business Central environment and company.")]
@@ -1804,6 +2152,164 @@ public class D365BCAdminService : IDisposable
         }
 
         return null;
+    }
+
+    internal static readonly string[] PteDeploymentSchedules = { "Immediate", "UpdateWindow", "NextMinorUpdate", "NextMajorUpdate" };
+    internal static readonly string[] PteScheduledKinds = { "UpdateWindow", "NextMinorUpdate", "NextMajorUpdate" };
+    internal static readonly string[] PteSyncModes = { "Add", "ForceSync" };
+    internal const long MaxPteFileSizeBytes = 50L * 1024 * 1024;
+    private static readonly string[] PteFinalStatuses = { "succeeded", "failed", "canceled", "skipped" };
+
+    internal static string? NormalizePteValue(string? value, string[] allowedValues) =>
+        allowedValues.FirstOrDefault(v => string.Equals(v, value?.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    public async Task<PteApiResult<PteOperation>> installPte(string environmentName, string appFilePath, PteInstallOptions options)
+    {
+        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/pteInstall";
+
+        using var form = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent(await File.ReadAllBytesAsync(appFilePath));
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        form.Add(fileContent, "extensionFile", Path.GetFileName(appFilePath));
+        form.Add(new StringContent(options.DeploymentSchedule), "deploymentSchedule");
+        form.Add(new StringContent(options.SyncMode), "syncMode");
+        form.Add(new StringContent(options.AcceptIsvEula ? "true" : "false"), "acceptIsvEula");
+        form.Add(new StringContent(options.InstallOrUpdateNeededDependencies ? "true" : "false"), "installOrUpdateNeededDependencies");
+        if (!string.IsNullOrWhiteSpace(options.LanguageId))
+        {
+            form.Add(new StringContent(options.LanguageId), "languageId");
+        }
+
+        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
+        httpRequest.Content = form;
+
+        using var response = await staticHttpClient.SendAsync(httpRequest);
+        return await ReadPteApiResult<PteOperation>(response);
+    }
+
+    public async Task<PteApiResult<ScheduledPteOperationsResponse>> getScheduledPteOperations(string environmentName)
+    {
+        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/scheduledPteOperations";
+
+        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        using var response = await staticHttpClient.SendAsync(httpRequest);
+        return await ReadPteApiResult<ScheduledPteOperationsResponse>(response);
+    }
+
+    public async Task<PteApiResult<PteOperation>> removeScheduledPteVersion(string environmentName, Guid appId, RemoveScheduledPteVersionRequest request)
+    {
+        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/{appId}/removeScheduledPteVersion";
+
+        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
+        httpRequest.Content = new StringContent(JsonSerializer.Serialize(request), System.Text.Encoding.UTF8, "application/json");
+
+        using var response = await staticHttpClient.SendAsync(httpRequest);
+        return await ReadPteApiResult<PteOperation>(response);
+    }
+
+    // The single-operation endpoint returns the operation object directly, while the list endpoint wraps it in "value".
+    public async Task<PteApiResult<AppOperation>> getAppOperation(string environmentName, Guid appId, Guid operationId)
+    {
+        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/{appId}/operations/{operationId}";
+
+        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
+        using var response = await staticHttpClient.SendAsync(httpRequest);
+        var body = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return new PteApiResult<AppOperation> { StatusCode = (int)response.StatusCode, Error = DescribeApiError(response, body) };
+        }
+
+        using var doc = JsonDocument.Parse(body);
+        var element = doc.RootElement;
+        if (element.TryGetProperty("value", out var list) && list.ValueKind == JsonValueKind.Array)
+        {
+            element = list.EnumerateArray().FirstOrDefault(op =>
+                op.TryGetProperty("id", out var id) && Guid.TryParse(id.GetString(), out var parsed) && parsed == operationId);
+            if (element.ValueKind == JsonValueKind.Undefined)
+            {
+                return new PteApiResult<AppOperation> { StatusCode = (int)response.StatusCode, Error = $"Operation {operationId} not found" };
+            }
+        }
+
+        return new PteApiResult<AppOperation> { StatusCode = (int)response.StatusCode, Value = element.Deserialize<AppOperation>() };
+    }
+
+    public async Task<(AppOperation? Operation, bool TimedOut, string? Error)> waitForPteOperation(string environmentName, Guid appId, Guid operationId, int maxWaitSeconds, int pollIntervalMs)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        AppOperation? lastOperation = null;
+        string? lastError = null;
+
+        while (stopwatch.Elapsed.TotalSeconds < maxWaitSeconds)
+        {
+            var result = await getAppOperation(environmentName, appId, operationId);
+            if (result.Success)
+            {
+                lastOperation = result.Value;
+                lastError = null;
+                if (PteFinalStatuses.Contains(lastOperation!.Status, StringComparer.OrdinalIgnoreCase))
+                {
+                    return (lastOperation, false, null);
+                }
+            }
+            else
+            {
+                lastError = result.Error;
+                Console.Error.WriteLine($"⚠️ [DEBUG] Polling operation {operationId} failed: {result.Error}");
+            }
+
+            await Task.Delay(pollIntervalMs);
+        }
+
+        return (lastOperation, true, lastError);
+    }
+
+    private static async Task<PteApiResult<T>> ReadPteApiResult<T>(HttpResponseMessage response)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+        var statusCode = (int)response.StatusCode;
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return new PteApiResult<T> { StatusCode = statusCode, Error = DescribeApiError(response, body) };
+        }
+
+        try
+        {
+            return new PteApiResult<T> { StatusCode = statusCode, Value = JsonSerializer.Deserialize<T>(body) };
+        }
+        catch (JsonException ex)
+        {
+            return new PteApiResult<T> { StatusCode = statusCode, Error = $"Unexpected response format: {ex.Message}" };
+        }
+    }
+
+    private static string DescribeApiError(HttpResponseMessage response, string body)
+    {
+        var prefix = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return prefix;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            var code = root.TryGetProperty("code", out var c) ? c.GetString() : null;
+            var message = root.TryGetProperty("message", out var m) ? m.GetString() : null;
+            if (code != null || message != null)
+            {
+                return $"{prefix}: {code}: {message}";
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return $"{prefix}: {body}";
     }
 
     public async Task<List<ExtensionDeploymentStatus>?> getExtensionDeploymentStatus(Guid tenantId, string environmentName, Guid companyId)
