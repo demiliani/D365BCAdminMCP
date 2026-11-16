@@ -147,9 +147,42 @@ public class D365BCAdminService : IDisposable
 
     #region MCP Tools
 
-    [McpServerTool, Description("Gets a Microsoft Entra ID token using interactive authentication for the specified tenant.")]
-    public static Task<string> get_microsoft_entra_id_token([Description("The tenant ID (GUID) for which to acquire the token")] Guid tenantId) =>
-        AcquireTokenAsync(tenantId);
+    // The token itself is never returned: it would end up in the model context and chat history.
+    [McpServerTool, Description("Signs in to Microsoft Entra ID for the specified tenant (Azure CLI / managed identity, falling back to interactive browser login) and caches the token used by all other tools. Returns the authentication status and expiry, not the token.")]
+    public static async Task<string> get_microsoft_entra_id_token([Description("The tenant ID (GUID) to sign in to")] Guid tenantId)
+    {
+        bool fromCache;
+        lock (_tokenCacheLock)
+        {
+            fromCache = _tokenCache.TryGetValue(tenantId, out var cached) && !cached.IsExpired;
+        }
+
+        try
+        {
+            await AcquireTokenAsync(tenantId);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Authentication failed for tenant {tenantId}: {ex.Message}");
+            return JsonSerializer.Serialize(new { success = false, tenantId, error = $"Authentication failed: {ex.Message}" });
+        }
+
+        DateTimeOffset expiresOn;
+        lock (_tokenCacheLock)
+        {
+            expiresOn = _tokenCache[tenantId].ExpiresOn;
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            tenantId,
+            authenticated = true,
+            fromCache,
+            expiresOn,
+            message = "Authenticated. The token is cached by the server and used automatically by the other tools."
+        });
+    }
 
     [McpServerTool, Description("Retrieves the tenant ID (GUID) for a given tenant name by querying the Azure AD well-known configuration endpoint.")]
     public static async Task<string> get_tenant_id_from_tenant_name(
