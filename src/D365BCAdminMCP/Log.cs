@@ -14,7 +14,7 @@ public static class Log
 {
     public const string LevelEnvironmentVariable = "D365BC_MCP_LOG_LEVEL";
 
-    public static LogSeverity MinimumLevel { get; set; } = ParseLevel(System.Environment.GetEnvironmentVariable(LevelEnvironmentVariable));
+    public static LogSeverity MinimumLevel { get; set; } = ParseLevel(Environment.GetEnvironmentVariable(LevelEnvironmentVariable));
 
     public static TextWriter Writer { get; set; } = Console.Error;
 

@@ -55,25 +55,3 @@ class Program
         Log.Info($"D365BCAdminMCP stopped cleanly (PID: {processId})");
     }
 }
-
-
-/*Cursor MCP Configuration - Add to your Cursor settings.json:
-
-{
-  "mcp.servers": {
-    "D365BCAdminServiceMCP": {
-      "type": "stdio",
-      "command": "dotnet",
-      "args": [
-        "run",
-        "--project",
-        "C:\\Users\\stefano\\OneDrive\\Projects\\AI\\D365AdminMCP\\D365BCAdminMCP\\D365BCAdminMCP.csproj"
-      ],
-      "cwd": "C:\\Users\\stefano\\OneDrive\\Projects\\AI\\D365AdminMCP\\D365BCAdminMCP"
-    }
-  }
-}
-
-*/
-
-
