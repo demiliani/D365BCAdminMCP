@@ -138,7 +138,14 @@ public abstract class HttpTestBase
     {
         D365BCAdminService.SetHttpMessageHandlerForTesting(Api);
         D365BCAdminService.SetCachedTokenForTesting(TenantId, Token);
+        D365BCAdminService.RetryDelay = (delay, _) =>
+        {
+            RetryDelays.Add(delay);
+            return Task.CompletedTask;
+        };
     }
+
+    protected List<TimeSpan> RetryDelays { get; } = new();
 
     protected static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement.Clone();
 }
