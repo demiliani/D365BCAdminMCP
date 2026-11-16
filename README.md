@@ -163,7 +163,7 @@ The MCP server exposes 38 administrative tools organized by category:
 
 | Tool | Description |
 |------|-------------|
-| `get_microsoft_entra_id_token` | Get authentication token with intelligent caching |
+| `get_microsoft_entra_id_token` | Sign in to a tenant and cache the token used by the other tools (returns status and expiry, never the token) |
 | `get_tenant_id_from_tenant_name` | Retrieve tenant ID from tenant name |
 
 ### 🌍 Environment Management (10 tools)
