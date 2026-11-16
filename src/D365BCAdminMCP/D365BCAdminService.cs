@@ -249,18 +249,20 @@ public class D365BCAdminService : IDisposable
         return JsonSerializer.Serialize(response);
     }
 
-    [McpServerTool, Description("Creates a new Business Central environment.")]
+    [McpServerTool, Description("Creates a new Business Central environment. The creation is asynchronous: the returned operation can be tracked with get_environment_operations.")]
     public static async Task<string> create_new_environment(
         [Description("The tenant ID (GUID) for which to create the environment")] Guid tenantId,
         [Description("The name of the new environment to create")] string environmentName,
         [Description("The type of environment to create (Sandbox, Production, etc.)")] string environmentType,
-        [Description("The country code for the environment (e.g., US, IT, GB)")] string countryCode)
+        [Description("The country code for the environment (e.g., US, IT, GB)")] string countryCode,
+        [Description("Optional: The ring to create the environment in (e.g. 'Preview', only for Sandbox environments). Defaults to the production ring.")] string? ringName = null,
+        [Description("Optional: The application version to create the environment on (e.g. '26.1.12345.0'). Defaults to the latest available version.")] string? applicationVersion = null)
     {
         var d365bcAdminService = await CreateServiceAsync(tenantId);
-        return ToJson(await d365bcAdminService.createNewEnvironment(environmentName, environmentType, countryCode));
+        return ToJson(await d365bcAdminService.createNewEnvironment(environmentName, environmentType, countryCode, ringName, applicationVersion));
     }
 
-    [McpServerTool, Description("Copies an existing Business Central environment to create a new one.")]
+    [McpServerTool, Description("Copies an existing Business Central environment to create a new one. The copy is asynchronous: the returned operation can be tracked with get_environment_operations.")]
     public static async Task<string> copy_environment(
         [Description("The tenant ID (GUID) for which to copy the environment")] Guid tenantId,
         [Description("The name of the source environment to copy from")] string sourceEnvironmentName,
@@ -278,6 +280,68 @@ public class D365BCAdminService : IDisposable
     {
         var d365bcAdminService = await CreateServiceAsync(tenantId);
         return ToJson(await d365bcAdminService.deleteEnvironment(environmentName));
+    }
+
+    [McpServerTool, Description("Recovers a soft-deleted Business Central environment (API v2.18+). Asynchronous: track the returned operation with get_environment_operations.")]
+    public static async Task<string> recover_environment(
+        [Description("The tenant ID (GUID)")] Guid tenantId,
+        [Description("The name of the deleted environment to recover")] string environmentName)
+    {
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.recoverEnvironment(environmentName));
+    }
+
+    [McpServerTool, Description("Renames a Business Central environment. Integrations and URLs that use the old name stop working. Asynchronous: track the returned operation with get_environment_operations.")]
+    public static async Task<string> rename_environment(
+        [Description("The tenant ID (GUID)")] Guid tenantId,
+        [Description("The current name of the environment")] string environmentName,
+        [Description("The new name of the environment (max 30 characters, starts with a letter; letters, digits, '-' and '_')")] string newEnvironmentName)
+    {
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.renameEnvironment(environmentName, newEnvironmentName));
+    }
+
+    [McpServerTool, Description("Restores a Business Central environment to a point in time into a NEW environment (the source environment is not changed). Use get_available_restore_periods to find valid points in time. Asynchronous: track the returned operation with get_environment_operations.")]
+    public static async Task<string> restore_environment(
+        [Description("The tenant ID (GUID)")] Guid tenantId,
+        [Description("The name of the environment to restore")] string environmentName,
+        [Description("The name of the new environment created by the restore")] string newEnvironmentName,
+        [Description("The type of the new environment: 'Production' or 'Sandbox'")] string environmentType,
+        [Description("The point in time to restore to, in ISO 8601 format (UTC), e.g. '2026-11-15T20:00:00Z'")] DateTime pointInTime,
+        [Description("Optional: Do not install per-tenant extensions in the restored environment (default: false)")] bool skipInstallingPtes = false,
+        [Description("Optional: Do not install third-party AppSource apps in the restored environment (default: false)")] bool skipInstallingThirdPartyGlobalApps = false,
+        [Description("Optional: Skip the cleanup that disables integrations and selected setups in the restored environment (default: false)")] bool skipEnvironmentCleanup = false)
+    {
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.restoreEnvironment(environmentName, newEnvironmentName, environmentType, pointInTime,
+            skipInstallingPtes, skipInstallingThirdPartyGlobalApps, skipEnvironmentCleanup));
+    }
+
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Lists the periods to which a Business Central environment can be restored, with the application version each period restores to.")]
+    public static async Task<string> get_available_restore_periods(
+        [Description("The tenant ID (GUID)")] Guid tenantId,
+        [Description("The name of the environment")] string environmentName)
+    {
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getAvailableRestorePeriods(environmentName));
+    }
+
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets environment operations (create, copy, delete, rename, restore, recover, updates, app installs, ...) and their status. Without environmentName it returns the operations of all environments; with operationId it returns that single operation.")]
+    public static async Task<string> get_environment_operations(
+        [Description("The tenant ID (GUID)")] Guid tenantId,
+        [Description("Optional: The name of the environment")] string? environmentName = null,
+        [Description("Optional: The ID of a specific operation, e.g. the id returned by create_new_environment or copy_environment")] Guid? operationId = null)
+    {
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getEnvironmentOperations(environmentName, operationId));
+    }
+
+    [McpServerTool(ReadOnly = true, Idempotent = true), Description("Gets the tenant quotas: maximum number of production and sandbox environments and storage limits.")]
+    public static async Task<string> get_environment_quotas(
+        [Description("The tenant ID (GUID)")] Guid tenantId)
+    {
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getEnvironmentQuotas());
     }
 
     [McpServerTool, Description("Gets storage usage information for a specific Business Central environment.")]
@@ -1717,30 +1781,74 @@ public class D365BCAdminService : IDisposable
         };
     }
 
-    public Task<ApiResult<EnvironmentCreationResponse>> createNewEnvironment(string environmentName, string environmentType, string countryCode)
+    public Task<ApiResult<EnvironmentOperation>> createNewEnvironment(string environmentName, string environmentType, string countryCode, string? ringName = null, string? applicationVersion = null)
     {
         var requestBody = new
         {
-            EnvironmentType = environmentType,
-            CountryCode = countryCode
+            environmentType,
+            countryCode,
+            ringName = string.IsNullOrWhiteSpace(ringName) ? null : ringName.Trim(),
+            applicationVersion = string.IsNullOrWhiteSpace(applicationVersion) ? null : applicationVersion.Trim()
         };
 
-        return SendAsync<EnvironmentCreationResponse>(HttpMethod.Put, EnvironmentUrl(environmentName), requestBody);
+        return SendAsync<EnvironmentOperation>(HttpMethod.Put, EnvironmentUrl(environmentName), requestBody);
     }
 
-    public Task<ApiResult<EnvironmentCreationResponse>> copyEnvironment(string sourceEnvironmentName, string newEnvironmentName, string newEnvironmentType)
+    public Task<ApiResult<EnvironmentOperation>> copyEnvironment(string sourceEnvironmentName, string newEnvironmentName, string newEnvironmentType)
     {
         var requestBody = new
         {
-            type = newEnvironmentType,
-            environmentName = sourceEnvironmentName
+            environmentName = newEnvironmentName,
+            type = newEnvironmentType
         };
 
-        return SendAsync<EnvironmentCreationResponse>(HttpMethod.Put, $"{EnvironmentUrl(newEnvironmentName)}/copy", requestBody);
+        return SendAsync<EnvironmentOperation>(HttpMethod.Post, $"{EnvironmentUrl(sourceEnvironmentName)}/copy", requestBody);
     }
 
     public Task<ApiResult<EnvironmentDeletionResponse>> deleteEnvironment(string environmentName) =>
         SendAsync<EnvironmentDeletionResponse>(HttpMethod.Delete, EnvironmentUrl(environmentName));
+
+    public Task<ApiResult<EnvironmentOperation>> recoverEnvironment(string environmentName) =>
+        SendAsync<EnvironmentOperation>(HttpMethod.Post, $"{EnvironmentUrl(environmentName)}/recover");
+
+    public Task<ApiResult<EnvironmentOperation>> renameEnvironment(string environmentName, string newEnvironmentName) =>
+        SendAsync<EnvironmentOperation>(HttpMethod.Post, $"{EnvironmentUrl(environmentName)}/rename", new { NewEnvironmentName = newEnvironmentName });
+
+    public Task<ApiResult<EnvironmentOperation>> restoreEnvironment(string environmentName, string newEnvironmentName, string environmentType, DateTime pointInTime,
+        bool skipInstallingPtes, bool skipInstallingThirdPartyGlobalApps, bool skipEnvironmentCleanup)
+    {
+        var requestBody = new
+        {
+            EnvironmentName = newEnvironmentName,
+            EnvironmentType = environmentType,
+            PointInTime = pointInTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            SkipInstallingPTEs = skipInstallingPtes,
+            SkipInstallingThirdPartyGlobalApps = skipInstallingThirdPartyGlobalApps,
+            SkipEnvironmentCleanup = skipEnvironmentCleanup
+        };
+
+        return SendAsync<EnvironmentOperation>(HttpMethod.Post, $"{EnvironmentUrl(environmentName)}/restore", requestBody);
+    }
+
+    public async Task<ApiResult<List<RestorePeriod>>> getAvailableRestorePeriods(string environmentName) =>
+        (await SendAsync<RestorePeriodsResponse>(HttpMethod.Get, $"{EnvironmentUrl(environmentName)}/availableRestorePeriods"))
+            .Map(response => response.Value ?? new List<RestorePeriod>());
+
+    public async Task<ApiResult<List<EnvironmentOperation>>> getEnvironmentOperations(string? environmentName = null, Guid? operationId = null)
+    {
+        var baseUrl = string.IsNullOrWhiteSpace(environmentName) ? $"{AdminApiBaseUrl}/environments" : EnvironmentUrl(environmentName);
+        if (operationId.HasValue)
+        {
+            return (await SendAsync<EnvironmentOperation>(HttpMethod.Get, $"{baseUrl}/operations/{operationId}"))
+                .Map(operation => new List<EnvironmentOperation> { operation });
+        }
+
+        return (await SendAsync<EnvironmentOperationsResponse>(HttpMethod.Get, $"{baseUrl}/operations"))
+            .Map(response => response.Value ?? new List<EnvironmentOperation>());
+    }
+
+    public Task<ApiResult<EnvironmentQuotas>> getEnvironmentQuotas() =>
+        SendAsync<EnvironmentQuotas>(HttpMethod.Get, $"{AdminApiBaseUrl}/environments/quotas");
 
     public Task<ApiResult<EnvironmentStorageUsage>> getUsageStorageForEnvironment(string environmentName) =>
         SendAsync<EnvironmentStorageUsage>(HttpMethod.Get, $"{EnvironmentUrl(environmentName)}/usedstorage");
@@ -1777,8 +1885,14 @@ public class D365BCAdminService : IDisposable
     public Task<ApiResult<bool>> deleteEnvironmentNotificationRecipient(Guid recipientId) =>
         SendWithoutResultAsync(HttpMethod.Delete, $"{AdminApiBaseUrl}/settings/notification/recipients/{recipientId}");
 
+    // Tool output always exposes the identifier as "id", whichever name the API used.
     public async Task<ApiResult<List<InstalledApp>>> getInstalledApps(string environmentName) =>
-        (await getInstalledAppsResult(environmentName)).Map(response => response.Value ?? new List<InstalledApp>());
+        (await getInstalledAppsResult(environmentName)).Map(response => (response.Value ?? new List<InstalledApp>()).Select(app =>
+        {
+            app.Id = app.EffectiveId;
+            app.AppId = null;
+            return app;
+        }).ToList());
 
     public Task<ApiResult<InstalledAppsResponse>> getInstalledAppsResult(string environmentName) =>
         SendAsync<InstalledAppsResponse>(HttpMethod.Get, $"{EnvironmentUrl(environmentName)}/apps");
