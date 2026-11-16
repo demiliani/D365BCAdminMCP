@@ -103,7 +103,9 @@ After installation, configure your AI assistant to use the MCP server.
 
 ## 🔐 Authentication
 
-On first use, a browser window will open for Microsoft Entra ID authentication. Sign in with your Business Central administrator account. The token is cached for 50 minutes and automatically refreshed.
+The server first tries the credentials already available on the machine (Azure CLI, Visual Studio, environment variables, managed identity). Otherwise, on first use, a browser window opens for Microsoft Entra ID authentication: sign in with your Business Central administrator account.
+
+The sign-in is kept across restarts: refresh tokens are stored in the operating system's encrypted token cache (Windows DPAPI, macOS Keychain, Linux keyring) and the account is remembered in `%LOCALAPPDATA%/D365BCAdminMCP` (`~/Library/Application Support/D365BCAdminMCP` on macOS, `~/.local/share/D365BCAdminMCP` on Linux), so the browser opens again only when the refresh token expires. Where no encrypted store is available (e.g. Linux without a keyring), the login is kept in memory only. Set `D365BC_MCP_PERSIST_TOKEN_CACHE=false` to disable persistence; `clear_cached_token` signs out of a tenant.
 
 **No additional setup required** - the MCP server handles authentication automatically!
 
@@ -118,6 +120,9 @@ Once configured, use natural language commands in your AI assistant:
 "Create a new sandbox environment called 'Dev-Test' in the US"
 "Copy Production environment to a new sandbox called 'Testing'"
 "Delete the 'Old-Test' sandbox environment"
+"Rename the 'Testing' sandbox to 'UAT'"
+"Which points in time can I restore Production to? Restore it to yesterday 08:00 UTC as a sandbox called 'Prod-Restore'"
+"Show the running environment operations and how many environments I can still create"
 ```
 
 ### Application Management
@@ -155,9 +160,9 @@ Once configured, use natural language commands in your AI assistant:
 "Check the extension deployment status for Fabrikam in Production"
 ```
 
-## 🛠️ Available Tools (38 Total)
+## 🛠️ Available Tools (44 Total)
 
-The MCP server exposes 38 administrative tools organized by category:
+The MCP server exposes 44 administrative tools organized by category:
 
 ### 🔑 Authentication & Tenant Management (2 tools)
 
@@ -166,20 +171,26 @@ The MCP server exposes 38 administrative tools organized by category:
 | `get_microsoft_entra_id_token` | Sign in to a tenant and cache the token used by the other tools (returns status and expiry, never the token) |
 | `get_tenant_id_from_tenant_name` | Retrieve tenant ID from tenant name |
 
-### 🌍 Environment Management (10 tools)
+### 🌍 Environment Management (16 tools)
 
 | Tool | Description |
 |------|-------------|
 | `get_environment_informations` | List all BC environments in a tenant |
-| `create_new_environment` | Create a new BC environment |
+| `create_new_environment` | Create a new BC environment (optionally on a specific ring and application version) |
 | `copy_environment` | Copy an existing environment to create a new one |
 | `delete_environment` | Delete a Business Central environment |
+| `recover_environment` | Recover a recently deleted environment |
+| `rename_environment` | Rename an environment (its URL changes, so integrations must be updated) |
+| `restore_environment` | Restore an environment to a point in time as a new environment |
+| `get_available_restore_periods` | List the time ranges an environment can be restored to |
+| `get_environment_operations` | List environment operations (create, copy, rename, restore, ...) for the tenant or one environment |
+| `get_environment_quotas` | Get the environment and storage quotas of the tenant |
 | `get_environment_update_window` | Get update window settings for an environment |
 | `set_environment_update_window` | Configure update window for an environment |
-| `set_app_insights_key` | Set Application Insights connection string |
-| `get_environment_storage_usage` | Get storage usage for a specific environment |
-| `get_all_environments_storage_usage` | Get storage usage for all environments |
-| `get_companies` | List companies in an environment |
+| `set_environment_application_insights_connection_string` | Set Application Insights connection string |
+| `get_usage_storage_for_environment` | Get storage usage for a specific environment |
+| `get_usage_storage_for_all_environments` | Get storage usage for all environments |
+| `get_environment_companies` | List companies in an environment |
 
 ### 📦 Application Management (6 tools)
 
@@ -196,8 +207,8 @@ The MCP server exposes 38 administrative tools organized by category:
 
 | Tool | Description |
 |------|-------------|
-| `get_available_environment_updates` | Check for available BC version updates |
-| `schedule_environment_update` | Schedule or run an environment update |
+| `get_environment_updates` | Check for available BC version updates |
+| `set_environment_update` | Schedule or run an environment update |
 
 ### 👥 Session Management (2 tools)
 
@@ -210,9 +221,9 @@ The MCP server exposes 38 administrative tools organized by category:
 
 | Tool | Description |
 |------|-------------|
-| `get_notification_recipients` | List notification recipients |
-| `create_notification_recipient` | Add a new notification recipient |
-| `delete_notification_recipient` | Remove a notification recipient |
+| `get_environment_notification_recipient` | List notification recipients |
+| `create_environment_notification_recipient` | Add a new notification recipient |
+| `delete_environment_notification_recipient` | Remove a notification recipient |
 
 ### 🔧 Feature Management (3 tools)
 
@@ -256,6 +267,12 @@ Uploading PTEs through the Automation API is being removed in 2027 release wave 
 |------|-------------|
 | `clear_cached_token` | Clear cached authentication token for a tenant |
 | `get_token_cache_status` | View cached token status for all tenants |
+
+### Tool behaviour
+
+- **Annotations:** every tool declares MCP hints, so clients can run read-only tools (`get_*`) without confirmation. Tools that delete or break things (`delete_environment`, `rename_environment`, `uninstall_app`, `kill_active_sessions`, `delete_environment_notification_recipient`, `cancel_scheduled_pte`) are marked destructive.
+- **Throttling and transient errors:** calls answered with 429 or 503 are retried up to 3 times, honouring `Retry-After` (max 60 s). Read calls are also retried on 502, 504, network errors and timeouts; write calls are not, to avoid running an operation twice. Each HTTP request times out after 5 minutes.
+- **Cancellation and progress:** cancelling a request in the client stops the tool, including the waits of `install_pte` and `install_ptes_from_folder`, which also report progress. An operation already accepted by Business Central keeps running server-side; check it with `get_app_operations` or `get_environment_operations`.
 
 ## 🎯 Quick Start
 
