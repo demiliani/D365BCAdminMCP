@@ -23,7 +23,7 @@ npm install -g @demiliani/d365bc-admin-mcp
 ### Prerequisites
 
 - **Node.js 16+** - [Download](https://nodejs.org/)
-- **Windows x64, Linux x64 or macOS on Apple Silicon** - the package ships a self-contained native server for these platforms (no .NET install needed); on other platforms build from source
+- **Windows, Linux (glibc) or macOS, on x64 or ARM64** - npm installs only the self-contained server for your platform (about 15 MB, no .NET install needed); elsewhere, build from source
 - **Dynamics 365 Business Central** - Admin access to your tenant
 - **Microsoft Entra ID** - Azure account with BC admin privileges
 
@@ -359,22 +359,32 @@ dotnet test src/D365BCAdminMCP.sln
 
 ### Releasing
 
-Releases are published by [`.github/workflows/release.yml`](.github/workflows/release.yml) with [npm trusted publishing](https://docs.npmjs.com/trusted-publishers): GitHub Actions authenticates to npm with a short-lived OIDC token, so no npm token is stored anywhere, and the package gets a provenance attestation. The workflow only *stages* the package; it goes live when a maintainer approves it with 2FA.
+Releases are published by [`.github/workflows/release.yml`](.github/workflows/release.yml) with [npm trusted publishing](https://docs.npmjs.com/trusted-publishers): GitHub Actions authenticates to npm with a short-lived OIDC token, so no npm token is stored anywhere, and every package gets a provenance attestation. The workflow only *stages* the packages; they go live when a maintainer approves them with 2FA.
+
+Each release is seven npm packages: `@demiliani/d365bc-admin-mcp` (the launcher) and one package per platform with its server binary (`@demiliani/d365bc-admin-mcp-win-x64`, `-win-arm64`, `-linux-x64`, `-linux-arm64`, `-osx-x64`, `-osx-arm64`). The main package lists them as optional dependencies pinned to its own version, and npm installs only the one matching the user's OS and CPU.
 
 To release:
 
-1. Set the same version in `package.json` and `src/D365BCAdminMCP/D365BCAdminMCP.csproj` and merge it to `main`.
-2. Tag the merge commit and push the tag: `git tag v1.4.0 && git push origin v1.4.0`. The workflow refuses tags that don't match both versions or that point outside `main`.
-3. The workflow runs the tests, builds and smoke-tests the binaries on Windows, Linux and macOS, and stages the package on npm.
-4. Approve the staged version on npmjs.com (package page → **Staged Packages**) with 2FA, or with `npm stage approve <stage-id>`.
-5. Review and publish the draft GitHub release, which carries the binaries and their SHA-256 checksums.
+1. Bump the version in `package.json` (the csproj reads it from there), e.g. `npm version 1.4.0 --no-git-tag-version`, and merge it to `main`.
+2. Tag the merge commit and push the tag: `git tag v1.4.0 && git push origin v1.4.0`. The workflow refuses tags that don't match `package.json` or that point outside `main`. A tag such as `v1.4.0-beta.1` publishes under the `next` dist-tag.
+3. The workflow runs the tests, builds and smoke-tests each binary on its own OS and CPU, installs the packed packages like a user would, and stages them on npm.
+4. On npmjs.com (each package → **Staged Packages**) approve the six platform packages first and `@demiliani/d365bc-admin-mcp` last, with 2FA. Approving the main package first would briefly leave users without a binary.
+5. Review and publish the draft GitHub release, which carries the binaries, their SHA-256 checksums and build provenance attestations.
 
 One-time setup:
 
 - **GitHub** → repository **Settings** → **Environments** → create `npm-publish`, and under **Deployment branches and tags** allow only tags matching `v*`. Optionally add required reviewers.
 - **GitHub** → **Settings** → **Rules** → add a tag ruleset for `v*` so only maintainers can create, update or delete release tags.
-- **npmjs.com** → package `@demiliani/d365bc-admin-mcp` → **Settings** → **Trusted Publisher** → **GitHub Actions**: organization or user `demiliani`, repository `D365BCAdminMCP`, workflow filename `release.yml`, environment `npm-publish`, allowed action **stage publish**. npm expects the first release through a new trusted publisher within 2 days of creating it.
-- After the first release goes through, set **Publishing access** to *Require two-factor authentication and disallow tokens*, and revoke any old automation tokens.
+- **GitHub** → **Settings** → **Code security** → enable **Private vulnerability reporting** (used by [SECURITY.md](SECURITY.md)).
+- **npmjs.com**, for each of the seven packages → **Settings** → **Trusted Publisher** → **GitHub Actions**: organization or user `demiliani`, repository `D365BCAdminMCP`, workflow filename `release.yml`, environment `npm-publish`, allowed action **stage publish**. npm expects the first publish through a new trusted publisher within 2 days of creating it.
+- After the first release goes through, set **Publishing access** to *Require two-factor authentication and disallow tokens* on every package, and revoke any old automation tokens.
+
+First release with platform packages: npm only lets you configure a trusted publisher on a package that already exists, so the six platform packages are published by hand once:
+
+1. Configure the trusted publisher on `@demiliani/d365bc-admin-mcp` and push the release tag. The **Stage npm packages** job fails on the first platform package, which doesn't exist yet.
+2. Download the `npm-packages` artifact from that workflow run, then from its folder run `npm login` and `for f in demiliani-d365bc-admin-mcp-*-<version>.tgz; do npm publish "$f"; done`, or in PowerShell `Get-ChildItem demiliani-d365bc-admin-mcp-*-<version>.tgz | ForEach-Object { npm publish $_.FullName }`. The pattern matches the six platform packages, not the main one.
+3. Configure the trusted publisher on each of the six platform packages.
+4. Re-run the failed jobs: versions already on npm are skipped, so only the main package is staged. Approve it.
 
 ## 📄 License
 
