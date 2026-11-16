@@ -512,6 +512,13 @@ public class InstalledApp
     
     [JsonPropertyName("canBeUninstalled")]
     public bool? CanBeUninstalled { get; set; }
+
+    // The API documentation names the identifier "appId" while existing responses were mapped from "id"; accept both.
+    [JsonPropertyName("appId")]
+    public Guid? AppId { get; set; }
+
+    [JsonIgnore]
+    public Guid? EffectiveId => Id ?? AppId;
 }
 
 public class InstalledAppsResponse
@@ -1192,6 +1199,51 @@ public class PteInstallOutcome
         Status = "skipped",
         Error = reason
     };
+}
+
+public class ExternalDependencyOutcome
+{
+    [JsonPropertyName("appId")]
+    public Guid AppId { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("publisher")]
+    public string? Publisher { get; set; }
+
+    [JsonPropertyName("requiredVersion")]
+    public string? RequiredVersion { get; set; }
+
+    [JsonPropertyName("installedVersion")]
+    public string? InstalledVersion { get; set; }
+
+    // none, install, update
+    [JsonPropertyName("action")]
+    public string Action { get; set; } = "none";
+
+    // satisfied, missing, outdated, installed, updated, failed
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "satisfied";
+
+    [JsonPropertyName("operationId")]
+    public Guid? OperationId { get; set; }
+
+    [JsonPropertyName("requiredBy")]
+    public List<string> RequiredBy { get; set; } = new();
+
+    [JsonPropertyName("error")]
+    public string? Error { get; set; }
+
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
+}
+
+public class ExternalDependencyResult
+{
+    public List<ExternalDependencyOutcome> Dependencies { get; set; } = new();
+    public HashSet<Guid> FailedDependencyIds { get; set; } = new();
+    public string? FatalError { get; set; }
 }
 
 public class PteApiResult<T>
