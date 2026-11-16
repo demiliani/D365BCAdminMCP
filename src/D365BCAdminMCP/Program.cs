@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
@@ -14,7 +14,7 @@ class Program
         // Set up process exit handlers for clean shutdown
         var processId = System.Diagnostics.Process.GetCurrentProcess().Id;
         Log.Info($"D365BCAdminMCP starting (PID: {processId})");
-        
+
         AppDomain.CurrentDomain.ProcessExit += (s, e) =>
         {
             Log.Debug($"Process exiting gracefully (PID: {processId})");
@@ -31,7 +31,7 @@ class Program
             // Configure all logs to go to stderr
             options.LogToStandardErrorThreshold = LogLevel.Trace;
         });
-       
+
         builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
@@ -51,7 +51,7 @@ class Program
             }));
 
         await builder.Build().RunAsync();
-        
+
         Log.Info($"D365BCAdminMCP stopped cleanly (PID: {processId})");
     }
 }

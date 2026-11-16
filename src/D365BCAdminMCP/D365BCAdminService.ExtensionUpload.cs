@@ -63,7 +63,8 @@ public partial class D365BCAdminService
 
         if (result.Success)
         {
-            return JsonSerializer.Serialize(new {
+            return JsonSerializer.Serialize(new
+            {
                 success = true,
                 message = "PTE upload created and extension content uploaded successfully",
                 extensionUploadId = result.ExtensionUploadId,
@@ -121,14 +122,14 @@ public partial class D365BCAdminService
                 Log.Debug($"Processing file: {appFile}");
                 var result = await service.createPteUpload(tenantId, environmentName, companyId, appFile, schedule, schemaSyncMode);
                 Log.Debug($"Result.Success: {result.Success}, Error: {result.Error ?? "none"}");
-                
+
                 if (result.Success)
                 {
                     Log.Debug($"Upload created for {appFile}. Now waiting for deployment to complete...");
-                    
+
                     // Wait for deployment to complete for this specific app
                     var deploymentCompleted = await service.waitForDeploymentCompletion(tenantId, environmentName, companyId, result.AppName ?? Path.GetFileNameWithoutExtension(appFile), maxWaitSeconds, pollIntervalMs);
-                    
+
                     if (deploymentCompleted)
                     {
                         successes.Add(new
@@ -197,7 +198,8 @@ public partial class D365BCAdminService
 
         if (uploadResponse != null)
         {
-            return JsonSerializer.Serialize(new {
+            return JsonSerializer.Serialize(new
+            {
                 success = true,
                 systemId = uploadResponse.SystemId,
                 schedule = uploadResponse.Schedule,
@@ -243,12 +245,12 @@ public partial class D365BCAdminService
     public async Task<ExtensionUploadResponse?> createExtensionUpload(Guid tenantId, string environmentName, Guid companyId, string schedule, string schemaSyncMode)
     {
         await EnsureAuthenticated(tenantId);
-        
+
         // API endpoint for creating extension upload
         var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload";
-        
+
         Log.Debug($"Making Automation API request to: {url}");
-        
+
         try
         {
             // First, try to get existing extension uploads to see the current state
@@ -258,29 +260,29 @@ public partial class D365BCAdminService
             {
                 var existingContent = await getResponse.Content.ReadAsStringAsync();
             }
-            
+
             // Create request body
             var requestBody = new ExtensionUploadRequest
             {
                 Schedule = schedule,
                 SchemaSyncMode = schemaSyncMode
             };
-            
+
             var jsonContent = JsonSerializer.Serialize(requestBody, ExtensionUploadRequestContext.Default.ExtensionUploadRequest);
             var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-            
-            
+
+
             // Try POST first (standard REST convention)
             var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
             httpRequest.Content = content;
             var response = await staticHttpClient.SendAsync(httpRequest);
             Log.Debug($"POST Response status: {response.StatusCode}");
-            
+
             if (response.IsSuccessStatusCode && response.StatusCode == System.Net.HttpStatusCode.Created)
             {
                 var responseContent = await response.Content.ReadAsStringAsync();
                 Log.Debug($"Extension upload created successfully");
-                
+
                 var uploadResponse = await response.Content.ReadFromJsonAsync(ExtensionUploadResponseContext.Default.ExtensionUploadResponse);
                 return uploadResponse;
             }
@@ -289,18 +291,18 @@ public partial class D365BCAdminService
                 var errorContent = await response.Content.ReadAsStringAsync();
                 Log.Debug($"POST returned BadRequest");
                 Log.Error($"Full error response: {errorContent}");
-                
+
                 // If POST fails, it's likely because a record already exists
                 // Always try to retrieve the existing record
                 Log.Debug($"Attempting to retrieve existing extension upload record...");
-                
+
                 // Try listing all and getting the first one
                 Log.Debug($"Attempting to list all extension uploads to find existing record...");
                 var listResponse = await staticHttpClient.GetAsync(url);
                 if (listResponse.IsSuccessStatusCode)
                 {
                     var listContent = await listResponse.Content.ReadAsStringAsync();
-                    
+
                     // Try to parse as a collection response
                     try
                     {
@@ -348,32 +350,32 @@ public partial class D365BCAdminService
     public async Task<bool> uploadExtensionContent(Guid tenantId, string environmentName, Guid companyId, string extensionUploadId, string appFilePath)
     {
         await EnsureAuthenticated(tenantId);
-        
+
         // Validate file exists
         if (!File.Exists(appFilePath))
         {
             Log.Error($"File not found: {appFilePath}");
             return false;
         }
-        
+
         Log.Debug($"Reading file: {appFilePath}");
-        
+
         try
         {
             // Read the .app file as binary FIRST before getting the record
             var fileBytes = await File.ReadAllBytesAsync(appFilePath);
             Log.Debug($"File size: {fileBytes.Length} bytes");
-            
+
             if (fileBytes.Length == 0)
             {
                 Log.Error($"File is empty!");
                 return false;
             }
-            
+
             // Now GET the extension upload record to retrieve the etag (concurrency token)
             var getUrl = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload({extensionUploadId})";
             Log.Debug($"Getting extension upload record to retrieve etag from: {getUrl}");
-            
+
             var getResponse = await staticHttpClient.GetAsync(getUrl);
             if (!getResponse.IsSuccessStatusCode)
             {
@@ -381,10 +383,10 @@ public partial class D365BCAdminService
                 Log.Error($"Failed to GET extension upload record: HTTP {getResponse.StatusCode}: {errorContent}");
                 return false;
             }
-            
+
             // Extract etag from response headers
             string? etag = null;
-            
+
             if (getResponse.Headers.TryGetValues("etag", out var etagValues))
             {
                 etag = etagValues.FirstOrDefault();
@@ -403,26 +405,26 @@ public partial class D365BCAdminService
                     etag = etagHeader.Value.FirstOrDefault();
                 }
             }
-            
+
             if (string.IsNullOrEmpty(etag))
             {
                 // Fallback: use "*" as the wildcard for If-Match
                 Log.Warn($"Could not retrieve etag from GET response, using wildcard '*' for If-Match");
                 etag = "*";
             }
-            
+
             // Create request with raw binary content (application/octet-stream)
             var patchContent = new ByteArrayContent(fileBytes);
             patchContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
-            
+
             Log.Debug($"Binary content size: {fileBytes.Length} bytes");
             Log.Debug($"Content-Type will be: application/octet-stream");
             Log.Debug($"Sending PATCH request with binary content and If-Match header...");
-            
+
             // API endpoint for uploading extension content
             var patchUrl = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload({extensionUploadId})/extensionContent";
             Log.Debug($"PATCH URL: {patchUrl}");
-            
+
             // Create a custom request with If-Match header (must be added to request, not content)
             var request = new HttpRequestMessage(HttpMethod.Patch, patchUrl)
             {
@@ -437,7 +439,7 @@ public partial class D365BCAdminService
 
             var response = await staticHttpClient.SendAsync(request);
             Log.Debug($"PATCH Response status: {response.StatusCode}");
-            
+
             if (response.IsSuccessStatusCode)
             {
                 var responseContent = await response.Content.ReadAsStringAsync();
@@ -470,21 +472,21 @@ public partial class D365BCAdminService
     public async Task<ExtensionUploadResponse?> getExtensionUpload(Guid tenantId, string environmentName, Guid companyId, string extensionUploadId)
     {
         await EnsureAuthenticated(tenantId);
-        
+
         var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload({extensionUploadId})";
-        
+
         Log.Debug($"getExtensionUpload called - URL: {url}");
-        
+
         try
         {
             var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
             var response = await staticHttpClient.SendAsync(httpRequest);
             Log.Debug($"Response status: {response.StatusCode}");
-            
+
             if (response.IsSuccessStatusCode)
             {
                 var jsonContent = await response.Content.ReadAsStringAsync();
-                
+
                 var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                 var uploadResponse = JsonSerializer.Deserialize<ExtensionUploadResponse>(jsonContent, options);
                 if (uploadResponse != null)
@@ -493,55 +495,55 @@ public partial class D365BCAdminService
                     Log.Debug($"Extension Upload ID: {uploadResponse.SystemId}");
                     Log.Debug($"Schedule: {uploadResponse.Schedule}");
                     Log.Debug($"Schema Sync Mode: {uploadResponse.SchemaSyncMode}");
-                        // Try to retrieve the media content from the media link
-                        var mediaReadLink = jsonContent.Contains("extensionContent@odata.mediaReadLink") ? "Found" : "Not found";
-                        Log.Debug($"OData media read link status: {mediaReadLink}");
-                    
-                        // Extract and try to read the actual content from the media link
-                        try
+                    // Try to retrieve the media content from the media link
+                    var mediaReadLink = jsonContent.Contains("extensionContent@odata.mediaReadLink") ? "Found" : "Not found";
+                    Log.Debug($"OData media read link status: {mediaReadLink}");
+
+                    // Extract and try to read the actual content from the media link
+                    try
+                    {
+                        var contentUrl = $"https://api.businesscentral.dynamics.com/v2.0/{url.Split('/')[5]}/api/microsoft/automation/v2.0/companies({url.Split("companies(")[1].Split(")")[0]})/extensionUpload({extensionUploadId})/extensionContent";
+                        var contentResponse = await staticHttpClient.GetAsync(contentUrl);
+                        Log.Debug($"Attempting to retrieve content from: {contentUrl}");
+                        if (contentResponse.IsSuccessStatusCode)
                         {
-                            var contentUrl = $"https://api.businesscentral.dynamics.com/v2.0/{url.Split('/')[5]}/api/microsoft/automation/v2.0/companies({url.Split("companies(")[1].Split(")")[0]})/extensionUpload({extensionUploadId})/extensionContent";
-                            var contentResponse = await staticHttpClient.GetAsync(contentUrl);
-                                Log.Debug($"Attempting to retrieve content from: {contentUrl}");
-                            if (contentResponse.IsSuccessStatusCode)
+                            var contentBytes = await contentResponse.Content.ReadAsByteArrayAsync();
+                            Log.Debug($"Successfully retrieved extension content: {contentBytes.Length} bytes");
+                        }
+                        else
+                        {
+                            Log.Debug($"Could not retrieve content: HTTP {contentResponse.StatusCode}");
+
+                            // Try to extract the actual media link from the JSON response
+                            try
                             {
-                                var contentBytes = await contentResponse.Content.ReadAsByteArrayAsync();
-                                Log.Debug($"Successfully retrieved extension content: {contentBytes.Length} bytes");
+                                var jsonDoc = JsonDocument.Parse(jsonContent);
+                                if (jsonDoc.RootElement.TryGetProperty("extensionContent@odata.mediaReadLink", out var mediaLinkElement))
+                                {
+                                    var actualMediaLink = mediaLinkElement.GetString();
+                                    Log.Debug($"Found media read link in JSON: {actualMediaLink}");
+
+                                    var actualResponse = await staticHttpClient.GetAsync(actualMediaLink);
+                                    Log.Debug($"Response from actual media link: HTTP {actualResponse.StatusCode}");
+                                    if (actualResponse.IsSuccessStatusCode)
+                                    {
+                                        var contentBytes2 = await actualResponse.Content.ReadAsByteArrayAsync();
+                                        Log.Debug($"Successfully retrieved extension content from media link: {contentBytes2.Length} bytes");
+                                    }
+                                }
                             }
-                            else
+                            catch (Exception parseEx)
                             {
-                                Log.Debug($"Could not retrieve content: HTTP {contentResponse.StatusCode}");
-                            
-                                    // Try to extract the actual media link from the JSON response
-                                    try
-                                    {
-                                        var jsonDoc = JsonDocument.Parse(jsonContent);
-                                        if (jsonDoc.RootElement.TryGetProperty("extensionContent@odata.mediaReadLink", out var mediaLinkElement))
-                                        {
-                                            var actualMediaLink = mediaLinkElement.GetString();
-                                            Log.Debug($"Found media read link in JSON: {actualMediaLink}");
-                                    
-                                            var actualResponse = await staticHttpClient.GetAsync(actualMediaLink);
-                                            Log.Debug($"Response from actual media link: HTTP {actualResponse.StatusCode}");
-                                            if (actualResponse.IsSuccessStatusCode)
-                                            {
-                                                var contentBytes2 = await actualResponse.Content.ReadAsByteArrayAsync();
-                                                Log.Debug($"Successfully retrieved extension content from media link: {contentBytes2.Length} bytes");
-                                            }
-                                        }
-                                    }
-                                    catch (Exception parseEx)
-                                    {
-                                        Log.Debug($"Exception parsing media link: {parseEx.Message}");
-                                    }
+                                Log.Debug($"Exception parsing media link: {parseEx.Message}");
                             }
                         }
-                        catch (Exception ex)
-                        {
-                            Log.Debug($"Exception retrieving content: {ex.Message}");
-                        }
-                    
-                        return uploadResponse;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Debug($"Exception retrieving content: {ex.Message}");
+                    }
+
+                    return uploadResponse;
                 }
             }
             else
@@ -562,22 +564,22 @@ public partial class D365BCAdminService
     public async Task<bool> waitForDeploymentCompletion(Guid tenantId, string environmentName, Guid companyId, string appName, int maxWaitSeconds = 300, int pollIntervalMs = 5000)
     {
         Log.Debug($"Waiting for all deployments to complete (max {maxWaitSeconds}s, polling every {pollIntervalMs}ms)...");
-        
+
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var maxWaitMs = maxWaitSeconds * 1000;
-        
+
         while (stopwatch.ElapsedMilliseconds < maxWaitMs)
         {
             try
             {
                 var deploymentStatuses = (await getExtensionDeploymentStatus(tenantId, environmentName, companyId)).Value;
-                
+
                 if (deploymentStatuses != null && deploymentStatuses.Count > 0)
                 {
                     // Check if there are any deployments still in progress
-                    var inProgressDeployments = deploymentStatuses.Where(ds => 
+                    var inProgressDeployments = deploymentStatuses.Where(ds =>
                         ds.Status != null && ds.Status.Equals("InProgress", StringComparison.OrdinalIgnoreCase)).ToList();
-                    
+
                     if (inProgressDeployments.Count == 0)
                     {
                         // No InProgress deployments - we can proceed with next app
@@ -588,16 +590,16 @@ public partial class D365BCAdminService
                         }
                         return true;
                     }
-                    
+
                     // Log current in-progress deployments
                     Log.Debug($"Still have InProgress deployments (elapsed: {stopwatch.ElapsedMilliseconds}ms):");
                     foreach (var status in inProgressDeployments)
                     {
                         Log.Debug($"   - {status.Name} ({status.Publisher}): {status.Status}");
                     }
-                    
+
                     // Also show completed ones for context
-                    var completedDeployments = deploymentStatuses.Where(ds => 
+                    var completedDeployments = deploymentStatuses.Where(ds =>
                         ds.Status != null && !ds.Status.Equals("InProgress", StringComparison.OrdinalIgnoreCase)).ToList();
                     if (completedDeployments.Count > 0)
                     {
@@ -617,11 +619,11 @@ public partial class D365BCAdminService
             {
                 Log.Warn($"Error checking deployment status: {ex.Message}");
             }
-            
+
             // Wait before next poll
             await Task.Delay(pollIntervalMs, CancellationToken);
         }
-        
+
         Log.Debug($"Deployment polling timeout after {maxWaitSeconds} seconds");
         return false;
     }
@@ -633,29 +635,29 @@ public partial class D365BCAdminService
     public async Task<bool> triggerExtensionDeployment(Guid tenantId, string environmentName, Guid companyId, string extensionUploadId, string schedule = "Current version")
     {
         await EnsureAuthenticated(tenantId);
-        
+
         Log.Debug($"triggerExtensionDeployment called - Extension ID: {extensionUploadId}, Schedule: {schedule}");
-        
+
         try
         {
             // First, GET the record to get its etag
             var getUrl = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload({extensionUploadId})";
             Log.Debug($"Getting extension upload record for etag...");
-            
+
             var getResponse = await staticHttpClient.GetAsync(getUrl);
             if (!getResponse.IsSuccessStatusCode)
             {
                 Log.Error($"Failed to GET extension record: HTTP {getResponse.StatusCode}");
                 return false;
             }
-            
+
             // Get the etag from response
             string? etag = null;
             if (getResponse.Headers.TryGetValues("etag", out var etagValues))
             {
                 etag = etagValues.FirstOrDefault();
             }
-            
+
             if (string.IsNullOrEmpty(etag))
             {
                 etag = "*"; // Fallback to wildcard
@@ -664,22 +666,22 @@ public partial class D365BCAdminService
             else
             {
             }
-            
+
             // PATCH the extension upload record to update schedule (which triggers deployment)
             var updateRequest = new { schedule = schedule };
             var updateJson = JsonSerializer.Serialize(updateRequest);
             var patchContent = new StringContent(updateJson, System.Text.Encoding.UTF8, "application/json");
-            
+
             var patchRequest = new HttpRequestMessage(HttpMethod.Patch, getUrl)
             {
                 Content = patchContent
             };
             patchRequest.Headers.Add("If-Match", etag);
-            
+
             Log.Debug($"Sending PATCH to update schedule and trigger deployment...");
             var patchResponse = await staticHttpClient.SendAsync(patchRequest);
             Log.Debug($"PATCH response status: {patchResponse.StatusCode}");
-            
+
             if (patchResponse.IsSuccessStatusCode)
             {
                 var responseContent = await patchResponse.Content.ReadAsStringAsync();
@@ -718,9 +720,9 @@ public partial class D365BCAdminService
         {
             // Call the bound action Microsoft.NAV.upload to trigger the actual installation
             var actionUrl = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload({extensionUploadId})/Microsoft.NAV.upload";
-            
+
             Log.Debug($"Calling Microsoft.NAV.upload bound action at: {actionUrl}");
-            
+
             // POST with no body (or empty body) to the action
             var request = new HttpRequestMessage(HttpMethod.Post, actionUrl);
             // Don't set Content-Type for action invocation - let it be null or use default
@@ -729,10 +731,10 @@ public partial class D365BCAdminService
             {
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
             }
-            
+
             Log.Debug($"Sending POST request to invoke upload action...");
             var response = await staticHttpClient.SendAsync(request);
-            
+
             Log.Debug($"Microsoft.NAV.upload response status: {response.StatusCode}");
 
             if (response.IsSuccessStatusCode)
@@ -762,7 +764,7 @@ public partial class D365BCAdminService
             return false;
         }
     }
-    
+
     /// <summary>
     /// Creates a Professional Tools Extension (PTE) upload task and uploads the extension content in a single operation.
     /// This method combines the functionality of createExtensionUpload and uploadExtensionContent.
@@ -770,58 +772,60 @@ public partial class D365BCAdminService
     public async Task<PteUploadResult> createPteUpload(Guid tenantId, string environmentName, Guid companyId, string appFilePath, string schedule = "Current version", string schemaSyncMode = "Add")
     {
         Log.Debug($"createPteUpload called - Environment: {environmentName}, Company: {companyId}, File: {appFilePath}");
-        
+
         try
         {
             // Extract app name from file (without extension)
             var appName = Path.GetFileNameWithoutExtension(appFilePath);
             Log.Debug($"App name extracted from file: {appName}");
-            
+
             // Step 1: Create the extension upload task
             Log.Debug($"Step 1: Creating extension upload task");
             var uploadResponse = await createExtensionUpload(tenantId, environmentName, companyId, schedule, schemaSyncMode);
-            
+
             if (uploadResponse == null)
             {
                 Log.Error($"Failed to create extension upload task");
                 return new PteUploadResult { Success = false, Error = "Failed to create extension upload task", AppName = appName };
             }
-            
+
             var extensionUploadId = uploadResponse.SystemId;
             if (string.IsNullOrEmpty(extensionUploadId))
             {
                 Log.Error($"Extension upload ID is null or empty");
                 return new PteUploadResult { Success = false, Error = "Extension upload ID is null or empty", AppName = appName };
             }
-            
+
             Log.Debug($"Extension upload task created successfully with ID: {extensionUploadId}");
-            
+
             // Step 2: Upload the extension content
             Log.Debug($"Step 2: Uploading extension content from file: {appFilePath}");
             Log.Debug($"Using extensionUploadId: {extensionUploadId} for PATCH request");
             var uploadSuccess = await uploadExtensionContent(tenantId, environmentName, companyId, extensionUploadId, appFilePath);
-            
+
             if (!uploadSuccess)
             {
                 Log.Error($"Failed to upload extension content");
-                return new PteUploadResult { 
-                    Success = false, 
+                return new PteUploadResult
+                {
+                    Success = false,
                     Error = "Failed to upload extension content",
                     ExtensionUploadId = extensionUploadId,
                     AppName = appName
                 };
             }
-            
+
             Log.Debug($"Extension content uploaded successfully");
 
             // Step 3: Invoke the Microsoft.NAV.upload bound action to actually install the extension
             Log.Debug($"Step 3: Invoking Microsoft.NAV.upload action to install the extension");
             var uploadActionSuccess = await invokeExtensionUploadAction(tenantId, environmentName, companyId, extensionUploadId);
-            
+
             if (!uploadActionSuccess)
             {
                 Log.Warn($"Upload action invocation failed");
-                return new PteUploadResult {
+                return new PteUploadResult
+                {
                     Success = false,
                     Error = "Failed to invoke Microsoft.NAV.upload action",
                     ExtensionUploadId = extensionUploadId,
@@ -830,7 +834,8 @@ public partial class D365BCAdminService
             }
 
             Log.Debug($"PTE upload completed successfully");
-            return new PteUploadResult { 
+            return new PteUploadResult
+            {
                 Success = true,
                 ExtensionUploadId = extensionUploadId,
                 Schedule = uploadResponse.Schedule,

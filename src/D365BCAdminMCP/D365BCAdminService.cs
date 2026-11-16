@@ -24,7 +24,7 @@ public partial class D365BCAdminService : IDisposable
     // Set by the tool for the duration of one MCP request; honours cancellation sent by the client.
     internal CancellationToken CancellationToken { get; set; }
     private bool _disposed = false;
-    
+
     // Static token cache for sharing across method calls
     private static readonly Dictionary<Guid, CachedToken> _tokenCache = new();
     private static readonly Dictionary<Guid, TokenCredential> _credentials = new();
@@ -349,9 +349,10 @@ public partial class D365BCAdminService : IDisposable
                 timeUntilExpiry = kvp.Value.IsExpired ? "Expired" : (kvp.Value.ExpiresOn - DateTimeOffset.UtcNow).ToString(@"hh\:mm\:ss")
             }).ToList();
 
-            return Task.FromResult(JsonSerializer.Serialize(new { 
+            return Task.FromResult(JsonSerializer.Serialize(new
+            {
                 totalCachedTokens = _tokenCache.Count,
-                tokens = status 
+                tokens = status
             }));
         }
     }
