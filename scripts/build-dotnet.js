@@ -3,42 +3,22 @@
 const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
+const { currentPlatform, executableName } = require('../lib/platforms');
 
 const projectPath = path.join(__dirname, '..', 'src', 'D365BCAdminMCP', 'D365BCAdminMCP.csproj');
 const outputDir = path.join(__dirname, '..', 'build');
 
 console.log('🔨 Building D365BC Admin MCP Server...');
 
-// Determine the runtime identifier for the current platform
-function getCurrentRuntimeId() {
-  const platform = os.platform();
-  const arch = os.arch();
-  
-  if (platform === 'win32') {
-    return arch === 'x64' ? 'win-x64' : 'win-arm64';
-  } else if (platform === 'darwin') {
-    return arch === 'arm64' ? 'osx-arm64' : 'osx-x64';
-  } else if (platform === 'linux') {
-    return arch === 'arm64' ? 'linux-arm64' : 'linux-x64';
-  }
-  
-  throw new Error(`Unsupported platform: ${platform}-${arch}`);
-}
-
 try {
-  const rid = getCurrentRuntimeId();
-  const buildOutput = path.join(outputDir, rid);
-  const exeName = rid.startsWith('win') ? 'D365BCAdminMCP.exe' : 'D365BCAdminMCP';
-  const exePath = path.join(buildOutput, exeName);
-  
-  // Check if executable already exists
-  if (fs.existsSync(exePath)) {
-    console.log(`✅ Platform-specific executable already exists: ${rid}`);
-    console.log(`📂 Using: ${exePath}`);
-    process.exit(0);
+  const platform = currentPlatform();
+  if (!platform) {
+    throw new Error(`Unsupported platform: ${process.platform}-${process.arch}`);
   }
-  
+  const rid = platform.rid;
+  const buildOutput = path.join(outputDir, rid);
+  const exeName = executableName(rid);
+
   console.log(`📦 Building for ${rid}...`);
   
   // Ensure output directory exists
@@ -46,9 +26,9 @@ try {
     fs.mkdirSync(outputDir, { recursive: true });
   }
   
-  // Build self-contained executable
+  // Same command as the release workflow; single-file, self-contained and trimming are set in the csproj.
   execSync(
-    `dotnet publish "${projectPath}" -c Release -r ${rid} --self-contained true -p:PublishSingleFile=true -o "${buildOutput}"`,
+    `dotnet publish "${projectPath}" -c Release -r ${rid} -o "${buildOutput}"`,
     { 
       stdio: 'inherit',
       encoding: 'utf-8'
@@ -56,7 +36,7 @@ try {
   );
   
   console.log('✅ Build completed successfully!');
-  console.log(`📂 Output: ${buildOutput}`);
+  console.log(`📂 Output: ${path.join(buildOutput, exeName)}`);
   
 } catch (error) {
   console.error('❌ Build failed:', error.message);
