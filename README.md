@@ -298,9 +298,21 @@ which d365bc-admin-mcp
 - Restart your AI assistant completely
 - Check the assistant's logs for error messages
 
+### Diagnostic Logging
+The server writes its logs to **stderr** only (stdout is reserved for the MCP protocol). Set the `D365BC_MCP_LOG_LEVEL` environment variable to `Debug`, `Information` (default), `Warning`, `Error` or `None`. Access tokens and response bodies are never logged.
+
+When an Admin Center API call fails, tools return the API error instead of a generic message, e.g. `{"error": "HTTP 404 Not Found: EnvironmentNotFound: ..."}`.
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit issues, feature requests, or pull requests.
+
+Build and run the tests (the same steps run in CI on every pull request):
+
+```bash
+dotnet build src/D365BCAdminMCP.sln
+dotnet test src/D365BCAdminMCP.sln
+```
 
 ## 📄 License
 
