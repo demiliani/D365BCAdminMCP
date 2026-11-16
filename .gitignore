@@ -1,6 +1,7 @@
-# Ignore build outputs
+# Ignore build outputs (the npm launcher in the root bin/ folder is source)
 build/
 bin/
+!/bin/
 obj/
 *.dll
 *.exe
