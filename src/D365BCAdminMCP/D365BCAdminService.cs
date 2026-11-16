@@ -16,7 +16,7 @@ public class D365BCAdminService : IDisposable
     private const string AdminApiBaseUrl = "https://api.businesscentral.dynamics.com/admin/" + AdminApiVersion;
 
     // Static shared HttpClient for all instances (best practice to avoid socket exhaustion)
-    private static readonly HttpClient staticHttpClient = new HttpClient();
+    private static HttpClient staticHttpClient = new HttpClient();
     private string? _accessToken;
     private bool _disposed = false;
     
@@ -72,117 +72,84 @@ public class D365BCAdminService : IDisposable
 
     private async Task EnsureAuthenticated(Guid tenantId)
     {
-        Console.WriteLine($"🔍 [DEBUG] EnsureAuthenticated called with tenantId: {tenantId}");
-        
-        // Check if we already have a token set
         if (!string.IsNullOrEmpty(_accessToken))
         {
-            Console.WriteLine($"🔍 [DEBUG] Already authenticated with existing access token");
-            return; // Already authenticated
+            return;
         }
 
-        Console.WriteLine($"🔍 [DEBUG] Getting new token using DefaultAzureCredential");
-        try
-        {
-            var credential = new DefaultAzureCredential();
-            var tokenRequestContext = new TokenRequestContext(new[] { "https://api.businesscentral.dynamics.com/.default" });
-            var tokenResult = await credential.GetTokenAsync(tokenRequestContext);
-            
-            Console.WriteLine($"🔍 [DEBUG] Token acquired successfully, length: {tokenResult.Token.Length}");
-            Console.WriteLine($"🔍 [DEBUG] Token expires at: {tokenResult.ExpiresOn}");
-            
-            _accessToken = tokenResult.Token;
-            Console.WriteLine($"🔍 [DEBUG] Access token stored");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"❌ [DEBUG] Authentication failed: {ex.Message}");
-            Console.WriteLine($"❌ [DEBUG] Full exception: {ex}");
-            throw new InvalidOperationException($"Failed to authenticate: {ex.Message}", ex);
-        }
+        _accessToken = await AcquireTokenAsync(tenantId == Guid.Empty ? null : tenantId);
     }
 
-    private async Task<string> GetAutomationApiTokenAsync(Guid tenantId)
-    {
-        Console.WriteLine($"🔍 [DEBUG] Getting Automation API token for tenantId: {tenantId}");
-        
-        try
-        {
-            var credential = new DefaultAzureCredential();
-            var tokenRequestContext = new TokenRequestContext(new[] { "Automation.ReadWrite.All" });
-            var tokenResult = await credential.GetTokenAsync(tokenRequestContext);
-            
-            Console.WriteLine($"🔍 [DEBUG] Automation API token acquired successfully, length: {tokenResult.Token.Length}");
-            Console.WriteLine($"🔍 [DEBUG] Automation API token expires at: {tokenResult.ExpiresOn}");
-            
-            return tokenResult.Token;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"❌ [DEBUG] Automation API authentication failed: {ex.Message}");
-            Console.WriteLine($"❌ [DEBUG] Full exception: {ex}");
-            throw new InvalidOperationException($"Failed to authenticate for Automation API: {ex.Message}", ex);
-        }
-    }
+    internal static void SetHttpMessageHandlerForTesting(HttpMessageHandler handler) => staticHttpClient = new HttpClient(handler);
 
-    #region MCP Tools
-
-    [McpServerTool, Description("Gets a Microsoft Entra ID token using interactive authentication for the specified tenant.")]
-    public static async Task<string> get_microsoft_entra_id_token([Description("The tenant ID (GUID) for which to acquire the token")] Guid tenantId)
+    internal static void SetCachedTokenForTesting(Guid tenantId, string token)
     {
-        // Check if we have a valid cached token
         lock (_tokenCacheLock)
         {
-            if (_tokenCache.TryGetValue(tenantId, out var cachedToken) && !cachedToken.IsExpired)
+            _tokenCache[tenantId] = new CachedToken { Token = token, ExpiresOn = DateTimeOffset.UtcNow.AddHours(1) };
+        }
+    }
+
+    // Tokens are cached per tenant; Guid.Empty is used for the credential's default tenant.
+    private static async Task<string> AcquireTokenAsync(Guid? tenantId)
+    {
+        var cacheKey = tenantId ?? Guid.Empty;
+        lock (_tokenCacheLock)
+        {
+            if (_tokenCache.TryGetValue(cacheKey, out var cachedToken) && !cachedToken.IsExpired)
             {
-                Console.WriteLine($"🔄 [DEBUG] Using cached token for tenant {tenantId}, expires: {cachedToken.ExpiresOn}");
+                Log.Debug($"Using cached token for tenant {cacheKey}, expires: {cachedToken.ExpiresOn}");
                 return cachedToken.Token;
             }
         }
 
-        Console.WriteLine($"🔑 [DEBUG] Acquiring new token for tenant {tenantId}");
-        
-        // Try DefaultAzureCredential first (includes Azure CLI, managed identity, etc.)
+        Log.Info($"Acquiring new token for tenant {cacheKey}");
         var tokenRequestContext = new TokenRequestContext(new[] { "https://api.businesscentral.dynamics.com/.default" });
-        
+
+        AccessToken tokenResult;
         try
         {
-            var credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions { TenantId = tenantId.ToString() });
-            var tokenResult = await credential.GetTokenAsync(tokenRequestContext);
-            
-            // Cache the new token
-            lock (_tokenCacheLock)
+            var options = new DefaultAzureCredentialOptions();
+            if (tenantId.HasValue)
             {
-                _tokenCache[tenantId] = new CachedToken
-                {
-                    Token = tokenResult.Token,
-                    ExpiresOn = tokenResult.ExpiresOn
-                };
+                options.TenantId = tenantId.Value.ToString();
             }
-            
-            Console.WriteLine($"✅ [DEBUG] New token acquired and cached for tenant {tenantId}, expires: {tokenResult.ExpiresOn}");
-            return tokenResult.Token;
+            tokenResult = await new DefaultAzureCredential(options).GetTokenAsync(tokenRequestContext);
         }
-        catch
+        catch (Exception ex)
         {
-            // Fall back to interactive browser credential if DefaultAzureCredential fails
-            var interactiveCredential = new InteractiveBrowserCredential(new InteractiveBrowserCredentialOptions { TenantId = tenantId.ToString() });
-            var tokenResult = await interactiveCredential.GetTokenAsync(tokenRequestContext);
-            
-            // Cache the new token
-            lock (_tokenCacheLock)
+            Log.Warn($"DefaultAzureCredential failed ({ex.Message}); falling back to interactive browser authentication");
+            var interactiveOptions = new InteractiveBrowserCredentialOptions();
+            if (tenantId.HasValue)
             {
-                _tokenCache[tenantId] = new CachedToken
-                {
-                    Token = tokenResult.Token,
-                    ExpiresOn = tokenResult.ExpiresOn
-                };
+                interactiveOptions.TenantId = tenantId.Value.ToString();
             }
-            
-            Console.WriteLine($"✅ [DEBUG] New token acquired via interactive auth and cached for tenant {tenantId}, expires: {tokenResult.ExpiresOn}");
-            return tokenResult.Token;
+            tokenResult = await new InteractiveBrowserCredential(interactiveOptions).GetTokenAsync(tokenRequestContext);
         }
+
+        lock (_tokenCacheLock)
+        {
+            _tokenCache[cacheKey] = new CachedToken { Token = tokenResult.Token, ExpiresOn = tokenResult.ExpiresOn };
+        }
+
+        Log.Info($"Token acquired for tenant {cacheKey}, expires: {tokenResult.ExpiresOn}");
+        return tokenResult.Token;
     }
+
+    private static async Task<D365BCAdminService> CreateServiceAsync(Guid tenantId) =>
+        new D365BCAdminService(await AcquireTokenAsync(tenantId));
+
+    private static string ToJson<T>(ApiResult<T> result) =>
+        result.Success ? JsonSerializer.Serialize(result.Value) : ErrorJson(result.Error);
+
+    private static string ErrorJson(string? error) =>
+        JsonSerializer.Serialize(new { error = error ?? "Empty response from the Business Central API" });
+
+    #region MCP Tools
+
+    [McpServerTool, Description("Gets a Microsoft Entra ID token using interactive authentication for the specified tenant.")]
+    public static Task<string> get_microsoft_entra_id_token([Description("The tenant ID (GUID) for which to acquire the token")] Guid tenantId) =>
+        AcquireTokenAsync(tenantId);
 
     [McpServerTool, Description("Retrieves the tenant ID (GUID) for a given tenant name by querying the Azure AD well-known configuration endpoint.")]
     public static async Task<string> get_tenant_id_from_tenant_name(
@@ -200,7 +167,7 @@ public class D365BCAdminService : IDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ [DEBUG] get_tenant_id_from_tenant_name failed: {ex.Message}");
+            Log.Error($"get_tenant_id_from_tenant_name failed: {ex.Message}");
             return JsonSerializer.Serialize(new { 
                 success = false, 
                 error = ex.Message,
@@ -212,10 +179,8 @@ public class D365BCAdminService : IDisposable
     [McpServerTool, Description("Gets environment information for a Dynamics 365 Business Central tenant.")]
     public static async Task<string> get_environment_informations([Description("The tenant ID (GUID) for which to get environment information")] Guid tenantId)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var environments = await d365bcAdminService.getEnvironmentInformations(tenantId);
-        return JsonSerializer.Serialize(environments);
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getEnvironmentInformations(tenantId));
     }
 
     [McpServerTool, Description("Gets the update window settings for a specific Business Central environment.")]
@@ -223,16 +188,8 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID) for which to get environment update window information")] Guid tenantId,
         [Description("The name of the environment to get update window for")] string environmentName)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var updateWindow = await d365bcAdminService.getEnvironmentUpdateWindow(environmentName, tenantId);
-
-        if (updateWindow != null)
-        {
-            return JsonSerializer.Serialize(updateWindow);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to retrieve update window information" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getEnvironmentUpdateWindow(environmentName, tenantId));
     }
 
     [McpServerTool, Description("Sets the update window settings for a specific Business Central environment.")]
@@ -243,16 +200,8 @@ public class D365BCAdminService : IDisposable
         [Description("The preferred end time (HH:mm format, e.g., '06:00')")] string preferredEndTime,
         [Description("The Windows time zone identifier (e.g., 'UTC', 'Eastern Standard Time')")] string timeZoneId = "UTC")
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var updateWindowResponse = await d365bcAdminService.setEnvironmentUpdateWindow(environmentName, preferredStartTime, preferredEndTime, timeZoneId);
-
-        if (updateWindowResponse != null)
-        {
-            return JsonSerializer.Serialize(updateWindowResponse);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to set update window information" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.setEnvironmentUpdateWindow(environmentName, preferredStartTime, preferredEndTime, timeZoneId));
     }
 
     [McpServerTool, Description("Sets the Application Insights connection string for a specific Business Central environment.")]
@@ -261,8 +210,7 @@ public class D365BCAdminService : IDisposable
         [Description("The name of the environment to set Application Insights connection string for")] string environmentName,
         [Description("The Application Insights connection string/key to set")] string appInsightsKey)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
         var response = await d365bcAdminService.setEnvironmentApplicationInsightsConnectionString(environmentName, appInsightsKey);
 
         return JsonSerializer.Serialize(response);
@@ -275,16 +223,8 @@ public class D365BCAdminService : IDisposable
         [Description("The type of environment to create (Sandbox, Production, etc.)")] string environmentType,
         [Description("The country code for the environment (e.g., US, IT, GB)")] string countryCode)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var creationResponse = await d365bcAdminService.createNewEnvironment(environmentName, environmentType, countryCode);
-
-        if (creationResponse != null)
-        {
-            return JsonSerializer.Serialize(creationResponse);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to create environment" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.createNewEnvironment(environmentName, environmentType, countryCode));
     }
 
     [McpServerTool, Description("Copies an existing Business Central environment to create a new one.")]
@@ -294,16 +234,8 @@ public class D365BCAdminService : IDisposable
         [Description("The name of the new environment to create")] string newEnvironmentName,
         [Description("The type of the new environment (Sandbox, Production, etc.)")] string newEnvironmentType)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var copyResponse = await d365bcAdminService.copyEnvironment(sourceEnvironmentName, newEnvironmentName, newEnvironmentType);
-
-        if (copyResponse != null)
-        {
-            return JsonSerializer.Serialize(copyResponse);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to copy environment" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.copyEnvironment(sourceEnvironmentName, newEnvironmentName, newEnvironmentType));
     }
 
     [McpServerTool, Description("Deletes a Business Central environment. Returns HTTP status code 202 (Accepted) with operation details. Expected errors: invalidStatusCannotDeleteTenant (can't delete in current state), tenantDeletionInProgress (already being deleted), ambiguousRequest (multiple environments with same name), environmentNotFound (environment not found).")]
@@ -311,16 +243,8 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID) for which to delete the environment")] Guid tenantId,
         [Description("The name of the environment to delete")] string environmentName)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var deletionResponse = await d365bcAdminService.deleteEnvironment(environmentName);
-
-        if (deletionResponse != null)
-        {
-            return JsonSerializer.Serialize(deletionResponse);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to delete environment" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.deleteEnvironment(environmentName));
     }
 
     [McpServerTool, Description("Gets storage usage information for a specific Business Central environment.")]
@@ -328,32 +252,16 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID) for which to get storage usage")] Guid tenantId,
         [Description("The name of the environment to get storage usage for")] string environmentName)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var storageUsage = await d365bcAdminService.getUsageStorageForEnvironment(environmentName);
-
-        if (storageUsage != null)
-        {
-            return JsonSerializer.Serialize(storageUsage);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to retrieve storage usage information" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getUsageStorageForEnvironment(environmentName));
     }
 
     [McpServerTool, Description("Gets storage usage information for all Business Central environments in the tenant.")]
     public static async Task<string> get_usage_storage_for_all_environments(
         [Description("The tenant ID (GUID) for which to get storage usage for all environments")] Guid tenantId)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var storageUsageList = await d365bcAdminService.getUsageStorageForAllEnvironments();
-
-        if (storageUsageList != null)
-        {
-            return JsonSerializer.Serialize(storageUsageList);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to retrieve storage usage information for all environments" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getUsageStorageForAllEnvironments());
     }
 
     [McpServerTool, Description("Gets information about available updates for a specific Business Central environment.")]
@@ -361,16 +269,8 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID) for which to get environment updates")] Guid tenantId,
         [Description("The name of the environment to get updates for")] string environmentName)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var updates = await d365bcAdminService.getEnvironmentUpdates(environmentName);
-
-        if (updates != null)
-        {
-            return JsonSerializer.Serialize(updates);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to retrieve environment updates" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getEnvironmentUpdates(environmentName));
     }
 
     [McpServerTool, Description("Sets or schedules an update for a specific Business Central environment and target version.")]
@@ -383,8 +283,7 @@ public class D365BCAdminService : IDisposable
         [Description("Optional: The scheduled datetime for the update")] DateTime? selectedDateTime = null,
         [Description("Optional: Whether to ignore the environment update window")] bool? ignoreUpdateWindow = null)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
 
         var request = new SetEnvironmentUpdateRequest
         {
@@ -401,14 +300,7 @@ public class D365BCAdminService : IDisposable
             };
         }
 
-        var updateResponse = await d365bcAdminService.setEnvironmentUpdate(environmentName, targetVersion, request);
-
-        if (updateResponse != null)
-        {
-            return JsonSerializer.Serialize(updateResponse);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to set environment update" });
+        return ToJson(await d365bcAdminService.setEnvironmentUpdate(environmentName, targetVersion, request));
     }
 
     [McpServerTool, Description("Gets active sessions for a specific Business Central environment.")]
@@ -417,16 +309,8 @@ public class D365BCAdminService : IDisposable
         [Description("The application family (e.g., 'BusinessCentral')")] string applicationFamily,
         [Description("The name of the environment to get active sessions for")] string environmentName)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var sessions = await d365bcAdminService.getActiveSessions(applicationFamily, environmentName);
-
-        if (sessions != null)
-        {
-            return JsonSerializer.Serialize(sessions);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to retrieve active sessions" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getActiveSessions(applicationFamily, environmentName));
     }
 
     [McpServerTool, Description("Terminates and deletes an active session for a Business Central environment.")]
@@ -436,27 +320,18 @@ public class D365BCAdminService : IDisposable
         [Description("The name of the environment")] string environmentName,
         [Description("The session ID to terminate")] int sessionId)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var success = await d365bcAdminService.killActiveSessions(applicationFamily, environmentName, sessionId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var result = await d365bcAdminService.killActiveSessions(applicationFamily, environmentName, sessionId);
 
-        return JsonSerializer.Serialize(new { success = success, sessionId = sessionId });
+        return JsonSerializer.Serialize(new { success = result.Success, sessionId = sessionId, error = result.Error }, IgnoreNullsOptions);
     }
 
     [McpServerTool, Description("Gets a list of notification recipients configured for Business Central environments.")]
     public static async Task<string> get_environment_notification_recipient(
         [Description("The tenant ID (GUID) for which to get notification recipients")] Guid tenantId)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var recipients = await d365bcAdminService.getEnvironmentNotificationRecipient();
-
-        if (recipients != null)
-        {
-            return JsonSerializer.Serialize(recipients);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to retrieve notification recipients" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getEnvironmentNotificationRecipient());
     }
 
     [McpServerTool, Description("Creates a new notification recipient for Business Central environments.")]
@@ -465,16 +340,8 @@ public class D365BCAdminService : IDisposable
         [Description("The email address of the notification recipient")] string email,
         [Description("The full name of the notification recipient")] string name)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var recipient = await d365bcAdminService.createEnvironmentNotificationRecipient(email, name);
-
-        if (recipient != null)
-        {
-            return JsonSerializer.Serialize(recipient);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to create notification recipient" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.createEnvironmentNotificationRecipient(email, name));
     }
 
     [McpServerTool, Description("Deletes a notification recipient for Business Central environments.")]
@@ -482,11 +349,10 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID) for which to delete the notification recipient")] Guid tenantId,
         [Description("The unique identifier of the notification recipient to delete")] Guid recipientId)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var success = await d365bcAdminService.deleteEnvironmentNotificationRecipient(recipientId);
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var result = await d365bcAdminService.deleteEnvironmentNotificationRecipient(recipientId);
 
-        return JsonSerializer.Serialize(new { success = success, recipientId = recipientId });
+        return JsonSerializer.Serialize(new { success = result.Success, recipientId = recipientId, error = result.Error }, IgnoreNullsOptions);
     }
 
     [McpServerTool, Description("Gets information about apps that are installed on a Business Central environment.")]
@@ -494,16 +360,8 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID) for which to get installed apps")] Guid tenantId,
         [Description("The name of the environment to get installed apps for")] string environmentName)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var apps = await d365bcAdminService.getInstalledApps(environmentName);
-
-        if (apps != null)
-        {
-            return JsonSerializer.Serialize(apps);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to retrieve installed apps" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getInstalledApps(environmentName));
     }
 
     [McpServerTool, Description("Gets information about new app versions that are available for apps currently installed on a Business Central environment.")]
@@ -511,14 +369,13 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID) for which to get available app updates")] Guid tenantId,
         [Description("The name of the environment to get available app updates for")] string environmentName)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var updates = await d365bcAdminService.getAvailableAppUpdates(environmentName);
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        var result = await d365bcAdminService.getAvailableAppUpdates(environmentName);
 
-        if (updates != null)
+        if (result.Success)
         {
             // Transform to the expected output format with "id" instead of "appId"
-            var transformedUpdates = updates.Select(update => new
+            var transformedUpdates = result.Value!.Select(update => new
             {
                 id = update.Id,
                 name = update.Name,
@@ -539,7 +396,7 @@ public class D365BCAdminService : IDisposable
             return JsonSerializer.Serialize(response);
         }
 
-        return JsonSerializer.Serialize(new { error = "Unable to retrieve available app updates" });
+        return ErrorJson(result.Error);
     }
 
     [McpServerTool, Description("Updates an app in a Business Central environment to a specified target version.")]
@@ -552,8 +409,7 @@ public class D365BCAdminService : IDisposable
         [Description("Optional: Whether to allow preview versions")] bool? allowPreviewVersion = null,
         [Description("Optional: Whether to install or update needed dependencies")] bool? installOrUpdateNeededDependencies = null)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
 
         var request = new UpdateAppRequest
         {
@@ -563,14 +419,7 @@ public class D365BCAdminService : IDisposable
             InstallOrUpdateNeededDependencies = installOrUpdateNeededDependencies
         };
 
-        var updateResponse = await d365bcAdminService.updateApp(environmentName, appId, request);
-
-        if (updateResponse != null)
-        {
-            return JsonSerializer.Serialize(updateResponse);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to update app" });
+        return ToJson(await d365bcAdminService.updateApp(environmentName, appId, request));
     }
 
     [McpServerTool, Description("Installs an app in a Business Central environment. acceptIsvEula defaults to true, meaning you agree to the ISV terms.")]
@@ -585,8 +434,7 @@ public class D365BCAdminService : IDisposable
         [Description("Optional: Whether to allow preview versions; requires targetVersion when true")] bool allowPreviewVersion = false,
         [Description("Optional: Locale ID language code, e.g. 'en-US'")] string? languageId = null)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
 
         var request = new InstallAppRequest
         {
@@ -600,17 +448,23 @@ public class D365BCAdminService : IDisposable
 
         var result = await d365bcAdminService.installApp("BusinessCentral", environmentName, appId, request);
 
-        if (result.Response != null)
+        // A 400 carries the structured list of missing dependencies (data.requirements): return it as-is.
+        if (result.StatusCode == 400 && result.ErrorBody != null)
         {
-            return JsonSerializer.Serialize(result.Response);
+            try
+            {
+                var errorResponse = JsonSerializer.Deserialize<UpdateAppErrorResponse>(result.ErrorBody);
+                if (errorResponse?.Code != null)
+                {
+                    return JsonSerializer.Serialize(errorResponse);
+                }
+            }
+            catch (JsonException)
+            {
+            }
         }
 
-        if (result.Error != null)
-        {
-            return JsonSerializer.Serialize(result.Error);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to install app" });
+        return ToJson(result);
     }
 
     [McpServerTool, Description("Uninstalls an app from a Business Central environment.")]
@@ -622,8 +476,7 @@ public class D365BCAdminService : IDisposable
         [Description("Optional: Whether to uninstall dependent apps")] bool? uninstallDependents = null,
         [Description("Optional: Whether to delete data and sync clean the extension")] bool? deleteData = null)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
 
         var request = new UninstallAppRequest
         {
@@ -632,14 +485,7 @@ public class D365BCAdminService : IDisposable
             DeleteData = deleteData
         };
 
-        var uninstallResponse = await d365bcAdminService.uninstallApp(environmentName, appId, request);
-
-        if (uninstallResponse != null)
-        {
-            return JsonSerializer.Serialize(uninstallResponse);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to uninstall app" });
+        return ToJson(await d365bcAdminService.uninstallApp(environmentName, appId, request));
     }
 
     [McpServerTool, Description("Gets information about app install, uninstall, and update operations for a specific app.")]
@@ -649,16 +495,8 @@ public class D365BCAdminService : IDisposable
         [Description("The ID of the app")] Guid appId,
         [Description("Optional: The specific operation ID to retrieve")] Guid? operationId = null)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var operations = await d365bcAdminService.getAppOperations(environmentName, appId, operationId);
-
-        if (operations != null)
-        {
-            return JsonSerializer.Serialize(operations);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to retrieve app operations" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getAppOperations(environmentName, appId, operationId));
     }
 
     [McpServerTool, Description("Gets a list of available features and their status in the feature management of a specific Business Central environment.")]
@@ -667,16 +505,8 @@ public class D365BCAdminService : IDisposable
         [Description("The name of the environment to get features for")] string environmentName,
         [Description("The company ID (GUID) for the company within the environment")] Guid companyId)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var features = await d365bcAdminService.getAvailableFeatures(tenantId, environmentName, companyId);
-
-        if (features != null)
-        {
-            return JsonSerializer.Serialize(features);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to retrieve available features" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getAvailableFeatures(tenantId, environmentName, companyId));
     }
 
     [McpServerTool, Description("Activates a feature in a Business Central environment.")]
@@ -688,11 +518,10 @@ public class D365BCAdminService : IDisposable
         [Description("Optional: Whether the feature activation should occur in the background (default: true)")] bool updateInBackground = true,
         [Description("Optional: The date and time when the feature activation should commence in ISO 8601 format (default: current UTC time)")] DateTime? startDateTime = null)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
         var result = await d365bcAdminService.activateFeature(tenantId, environmentName, companyId, featureId, updateInBackground, startDateTime);
 
-        if (result)
+        if (result.Success)
         {
             return JsonSerializer.Serialize(new { 
                 success = true, 
@@ -705,7 +534,7 @@ public class D365BCAdminService : IDisposable
 
         return JsonSerializer.Serialize(new { 
             success = false, 
-            error = "Unable to activate feature" 
+            error = result.Error
         });
     }
 
@@ -716,11 +545,10 @@ public class D365BCAdminService : IDisposable
         [Description("The company ID (GUID) for the company within the environment")] Guid companyId,
         [Description("The feature ID (string) to deactivate")] string featureId)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
         var result = await d365bcAdminService.deactivateFeature(tenantId, environmentName, companyId, featureId);
 
-        if (result)
+        if (result.Success)
         {
             return JsonSerializer.Serialize(new { 
                 success = true, 
@@ -731,7 +559,7 @@ public class D365BCAdminService : IDisposable
 
         return JsonSerializer.Serialize(new { 
             success = false, 
-            error = "Unable to deactivate feature" 
+            error = result.Error
         });
     }
 
@@ -740,16 +568,8 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID) for which to get environment companies")] Guid tenantId,
         [Description("The name of the environment to get companies for")] string environmentName)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var companies = await d365bcAdminService.getEnvironmentCompanies(environmentName);
-
-        if (companies != null)
-        {
-            return JsonSerializer.Serialize(companies);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to retrieve environment companies" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getEnvironmentCompanies(environmentName));
     }
 
     [McpServerTool, Description("Gets the extension deployment status for a specific Business Central environment and company.")]
@@ -758,16 +578,8 @@ public class D365BCAdminService : IDisposable
         [Description("The name of the environment to get extension deployment status for")] string environmentName,
         [Description("The company ID (GUID) for the company within the environment")] Guid companyId)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
-        var deploymentStatus = await d365bcAdminService.getExtensionDeploymentStatus(tenantId, environmentName, companyId);
-
-        if (deploymentStatus != null)
-        {
-            return JsonSerializer.Serialize(deploymentStatus);
-        }
-
-        return JsonSerializer.Serialize(new { error = "Unable to retrieve extension deployment status" });
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
+        return ToJson(await d365bcAdminService.getExtensionDeploymentStatus(tenantId, environmentName, companyId));
     }
 
     // [McpServerTool, Description("Creates an extension upload task for a Business Central environment and company.")]
@@ -805,8 +617,7 @@ public class D365BCAdminService : IDisposable
         [Description("The schedule for the extension upload (e.g., 'Current version', 'Next version')")] string schedule = "Current version",
         [Description("The schema synchronization mode (e.g., 'Add', 'Force')")] string schemaSyncMode = "Add")
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
         var result = await d365bcAdminService.createPteUpload(tenantId, environmentName, companyId, appFilePath, schedule, schemaSyncMode);
 
         if (result.Success)
@@ -856,8 +667,7 @@ public class D365BCAdminService : IDisposable
             });
         }
 
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var service = new D365BCAdminService(accessToken);
+        var service = await CreateServiceAsync(tenantId);
 
         var successes = new List<object>();
         var failures = new List<object>();
@@ -866,13 +676,13 @@ public class D365BCAdminService : IDisposable
         {
             try
             {
-                Console.WriteLine($"🔄 [DEBUG] Processing file: {appFile}");
+                Log.Debug($"Processing file: {appFile}");
                 var result = await service.createPteUpload(tenantId, environmentName, companyId, appFile, schedule, schemaSyncMode);
-                Console.WriteLine($"🔄 [DEBUG] Result.Success: {result.Success}, Error: {result.Error ?? "none"}");
+                Log.Debug($"Result.Success: {result.Success}, Error: {result.Error ?? "none"}");
                 
                 if (result.Success)
                 {
-                    Console.WriteLine($"✅ [DEBUG] Upload created for {appFile}. Now waiting for deployment to complete...");
+                    Log.Debug($"Upload created for {appFile}. Now waiting for deployment to complete...");
                     
                     // Wait for deployment to complete for this specific app
                     var deploymentCompleted = await service.waitForDeploymentCompletion(tenantId, environmentName, companyId, result.AppName ?? Path.GetFileNameWithoutExtension(appFile), maxWaitSeconds, pollIntervalMs);
@@ -888,7 +698,7 @@ public class D365BCAdminService : IDisposable
                             deploymentStatus = "Completed",
                             appName = result.AppName
                         });
-                        Console.WriteLine($"✅ [DEBUG] Deployment completed successfully for {appFile}");
+                        Log.Debug($"Deployment completed successfully for {appFile}");
                     }
                     else
                     {
@@ -897,7 +707,7 @@ public class D365BCAdminService : IDisposable
                             file = appFile,
                             error = $"Deployment did not complete within {maxWaitSeconds} seconds"
                         });
-                        Console.WriteLine($"❌ [DEBUG] Deployment timeout for {appFile}");
+                        Log.Error($"Deployment timeout for {appFile}");
                     }
                 }
                 else
@@ -907,12 +717,12 @@ public class D365BCAdminService : IDisposable
                         file = appFile,
                         error = result.Error
                     });
-                    Console.WriteLine($"❌ [DEBUG] Failed to process {appFile}: {result.Error}");
+                    Log.Error($"Failed to process {appFile}: {result.Error}");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ [DEBUG] Exception processing {appFile}: {ex.Message}");
+                Log.Error($"Exception processing {appFile}: {ex.Message}");
                 failures.Add(new
                 {
                     file = appFile,
@@ -970,10 +780,10 @@ public class D365BCAdminService : IDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"⚠️ [DEBUG] Unable to read metadata from {appFilePath}: {ex.Message}");
+            Log.Warn($"Unable to read metadata from {appFilePath}: {ex.Message}");
         }
 
-        var service = new D365BCAdminService(await get_microsoft_entra_id_token(tenantId));
+        var service = await CreateServiceAsync(tenantId);
 
         ExternalDependencyResult? dependencies = null;
         if (appInfo != null)
@@ -1053,7 +863,7 @@ public class D365BCAdminService : IDisposable
             });
         }
 
-        var service = new D365BCAdminService(await get_microsoft_entra_id_token(tenantId));
+        var service = await CreateServiceAsync(tenantId);
 
         var installedResult = await service.getInstalledAppsResult(environmentName);
         if (!installedResult.Success)
@@ -1097,10 +907,10 @@ public class D365BCAdminService : IDisposable
                 continue;
             }
 
-            Console.Error.WriteLine($"🔄 [DEBUG] Installing PTE {app.Name} {app.Version} from {app.FilePath}");
+            Log.Debug($"Installing PTE {app.Name} {app.Version} from {app.FilePath}");
 
             // Long folder runs can outlive a token; the cache refreshes it when close to expiry.
-            service.SetAccessToken(await get_microsoft_entra_id_token(tenantId));
+            service.SetAccessToken(await AcquireTokenAsync(tenantId));
             var outcome = await service.installPteAndWait(environmentName, app.FilePath, app, options, waitForCompletion: true, maxWaitSeconds, pollIntervalMs);
             results.Add(outcome);
 
@@ -1138,7 +948,7 @@ public class D365BCAdminService : IDisposable
         [Description("The tenant ID (GUID)")] Guid tenantId,
         [Description("The name of the environment")] string environmentName)
     {
-        var service = new D365BCAdminService(await get_microsoft_entra_id_token(tenantId));
+        var service = await CreateServiceAsync(tenantId);
         var result = await service.getScheduledPteOperations(environmentName);
 
         if (result.Success)
@@ -1168,7 +978,7 @@ public class D365BCAdminService : IDisposable
             return JsonSerializer.Serialize(new { success = false, error = "targetVersion is required" });
         }
 
-        var service = new D365BCAdminService(await get_microsoft_entra_id_token(tenantId));
+        var service = await CreateServiceAsync(tenantId);
         var result = await service.removeScheduledPteVersion(environmentName, appId, new RemoveScheduledPteVersionRequest
         {
             TargetVersion = targetVersion.Trim(),
@@ -1344,18 +1154,18 @@ public class D365BCAdminService : IDisposable
         List<AvailableAppUpdate>? availableUpdates = null;
         foreach (var dep in unsatisfied)
         {
-            PteApiResult<PteOperation> request;
+            ApiResult<(Guid? Id, string? Status, string? ErrorMessage)> request;
             if (dep.Status == "missing")
             {
                 dep.Action = "install";
-                Console.Error.WriteLine($"🔄 [DEBUG] Installing missing dependency {dep.Name} ({dep.AppId})");
-                request = await installGlobalApp(environmentName, dep.AppId, new InstallAppRequest
+                Log.Info($"Installing missing dependency {dep.Name} ({dep.AppId})");
+                request = (await installApp("BusinessCentral", environmentName, dep.AppId, new InstallAppRequest
                 {
                     AcceptIsvEula = options.AcceptIsvEula,
                     InstallOrUpdateNeededDependencies = true,
                     UseEnvironmentUpdateWindow = false,
                     LanguageId = options.LanguageId
-                });
+                })).Map(op => (op.Id, op.Status, op.ErrorMessage));
             }
             else
             {
@@ -1380,13 +1190,13 @@ public class D365BCAdminService : IDisposable
                     continue;
                 }
 
-                Console.Error.WriteLine($"🔄 [DEBUG] Updating dependency {dep.Name} ({dep.AppId}) from {dep.InstalledVersion} to {update.Version}");
-                request = await updateGlobalApp(environmentName, dep.AppId, new UpdateAppRequest
+                Log.Info($"Updating dependency {dep.Name} ({dep.AppId}) from {dep.InstalledVersion} to {update.Version}");
+                request = (await updateApp(environmentName, dep.AppId, new UpdateAppRequest
                 {
                     TargetVersion = update.Version,
                     UseEnvironmentUpdateWindow = false,
                     InstallOrUpdateNeededDependencies = true
-                });
+                })).Map(op => (op.Id, op.Status, op.ErrorMessage));
             }
 
             if (!request.Success)
@@ -1395,9 +1205,8 @@ public class D365BCAdminService : IDisposable
                 continue;
             }
 
-            dep.OperationId = request.Value!.Id;
-            var status = request.Value.Status;
-            var operationError = request.Value.ErrorMessage;
+            var (operationId, status, operationError) = request.Value;
+            dep.OperationId = operationId;
 
             if (dep.OperationId != null && !PteFinalStatuses.Contains(status, StringComparer.OrdinalIgnoreCase))
             {
@@ -1472,7 +1281,7 @@ public class D365BCAdminService : IDisposable
 
     internal async Task<PteInstallOutcome> installPteAndWait(string environmentName, string appFilePath, PteAppInfo? appInfo, PteInstallOptions options, bool waitForCompletion, int maxWaitSeconds, int pollIntervalMs)
     {
-        PteApiResult<PteOperation> installResult;
+        ApiResult<PteOperation> installResult;
         try
         {
             installResult = await installPte(environmentName, appFilePath, options);
@@ -1525,8 +1334,7 @@ public class D365BCAdminService : IDisposable
         [Description("The company ID (GUID) for the company within the environment")] Guid companyId,
         [Description("The extension upload ID (systemId) to retrieve")] string extensionUploadId)
     {
-        var accessToken = await get_microsoft_entra_id_token(tenantId);
-        var d365bcAdminService = new D365BCAdminService(accessToken);
+        var d365bcAdminService = await CreateServiceAsync(tenantId);
         var uploadResponse = await d365bcAdminService.getExtensionUpload(tenantId, environmentName, companyId, extensionUploadId);
 
         if (uploadResponse != null)
@@ -1574,12 +1382,12 @@ public class D365BCAdminService : IDisposable
         {
             if (_tokenCache.Remove(tenantId))
             {
-                Console.WriteLine($"🗑️ [DEBUG] Cleared cached token for tenant {tenantId}");
+                Log.Debug($"Cleared cached token for tenant {tenantId}");
                 return Task.FromResult(JsonSerializer.Serialize(new { success = true, message = $"Token cleared for tenant {tenantId}" }));
             }
             else
             {
-                Console.WriteLine($"⚠️ [DEBUG] No cached token found for tenant {tenantId}");
+                Log.Warn($"No cached token found for tenant {tenantId}");
                 return Task.FromResult(JsonSerializer.Serialize(new { success = false, message = $"No cached token found for tenant {tenantId}" }));
             }
         }
@@ -1622,26 +1430,26 @@ public class D365BCAdminService : IDisposable
 
         try
         {
-            Console.WriteLine($"🔍 [DEBUG] GetTenantIDFromTenantName called with tenantName: {tenantName}");
+            Log.Debug($"GetTenantIDFromTenantName called with tenantName: {tenantName}");
             
             // Construct the well-known OpenID configuration endpoint
             var url = $"https://login.microsoftonline.com/{tenantName}/.well-known/openid-configuration";
-            Console.WriteLine($"🔍 [DEBUG] Making request to: {url}");
+            Log.Debug($"Making request to: {url}");
             
             var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
             
             var response = await staticHttpClient.SendAsync(httpRequest);
-            Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
+            Log.Debug($"Response status: {response.StatusCode}");
 
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"❌ [DEBUG] Failed to retrieve tenant configuration: {response.StatusCode} - {errorContent}");
+                Log.Error($"Failed to retrieve tenant configuration: {response.StatusCode} - {errorContent}");
                 throw new InvalidOperationException($"Failed to retrieve tenant configuration for '{tenantName}': HTTP {response.StatusCode}");
             }
 
             var jsonContent = await response.Content.ReadAsStringAsync();
-            Console.WriteLine($"🔍 [DEBUG] Response content length: {jsonContent.Length}");
+            Log.Debug($"Response content length: {jsonContent.Length}");
             
             // Parse the JSON response to extract the tenant ID from the token_endpoint
             var jsonDocument = JsonDocument.Parse(jsonContent);
@@ -1649,18 +1457,18 @@ public class D365BCAdminService : IDisposable
 
             if (!root.TryGetProperty("token_endpoint", out var tokenEndpointElement))
             {
-                Console.WriteLine($"❌ [DEBUG] 'token_endpoint' property not found in response");
+                Log.Error($"'token_endpoint' property not found in response");
                 throw new InvalidOperationException("'token_endpoint' property not found in OpenID configuration response");
             }
 
             var tokenEndpoint = tokenEndpointElement.GetString();
             if (string.IsNullOrEmpty(tokenEndpoint))
             {
-                Console.WriteLine($"❌ [DEBUG] 'token_endpoint' value is null or empty");
+                Log.Error($"'token_endpoint' value is null or empty");
                 throw new InvalidOperationException("'token_endpoint' value is empty");
             }
 
-            Console.WriteLine($"🔍 [DEBUG] Token endpoint: {tokenEndpoint}");
+            Log.Debug($"Token endpoint: {tokenEndpoint}");
 
             // Extract the tenant ID (GUID) from the token_endpoint URL
             // Example: https://login.microsoftonline.com/d0de2a8d-d356-4558-99bc-61e6d62a55e8/oauth2/token
@@ -1671,725 +1479,357 @@ public class D365BCAdminService : IDisposable
             
             if (pathSegments.Length == 0)
             {
-                Console.WriteLine($"❌ [DEBUG] Could not extract path segments from token_endpoint");
+                Log.Error($"Could not extract path segments from token_endpoint");
                 throw new InvalidOperationException("Could not extract tenant ID from token_endpoint URL");
             }
 
             var tenantIdString = pathSegments[0];
-            Console.WriteLine($"🔍 [DEBUG] Extracted tenant ID string: {tenantIdString}");
+            Log.Debug($"Extracted tenant ID string: {tenantIdString}");
 
             if (!Guid.TryParse(tenantIdString, out var tenantId))
             {
-                Console.WriteLine($"❌ [DEBUG] Failed to parse '{tenantIdString}' as a GUID");
+                Log.Error($"Failed to parse '{tenantIdString}' as a GUID");
                 throw new InvalidOperationException($"Failed to parse tenant ID '{tenantIdString}' as a valid GUID");
             }
 
-            Console.WriteLine($"✅ [DEBUG] Successfully retrieved tenant ID: {tenantId}");
+            Log.Debug($"Successfully retrieved tenant ID: {tenantId}");
             return tenantId;
         }
         catch (HttpRequestException ex)
         {
-            Console.WriteLine($"❌ [DEBUG] HTTP request failed: {ex.Message}");
+            Log.Error($"HTTP request failed: {ex.Message}");
             throw new InvalidOperationException($"HTTP request to retrieve tenant configuration failed: {ex.Message}", ex);
         }
         catch (JsonException ex)
         {
-            Console.WriteLine($"❌ [DEBUG] JSON parsing failed: {ex.Message}");
+            Log.Error($"JSON parsing failed: {ex.Message}");
             throw new InvalidOperationException($"Failed to parse OpenID configuration response: {ex.Message}", ex);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ [DEBUG] Unexpected error: {ex.Message}");
+            Log.Error($"Unexpected error: {ex.Message}");
             throw new InvalidOperationException($"An unexpected error occurred while retrieving tenant ID: {ex.Message}", ex);
         }
     }
 
-    public async Task<List<Environment>> getEnvironmentInformations(Guid? tenantId = null)
+    private static readonly JsonSerializerOptions IgnoreNullsOptions = new() { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
+
+    private static string EnvironmentUrl(string environmentName, string applicationFamily = "BusinessCentral") =>
+        $"{AdminApiBaseUrl}/applications/{Uri.EscapeDataString(applicationFamily)}/environments/{Uri.EscapeDataString(environmentName)}";
+
+    private static string AutomationCompanyUrl(string environmentName, Guid companyId) =>
+        $"https://api.businesscentral.dynamics.com/v2.0/{Uri.EscapeDataString(environmentName)}/api/microsoft/automation/v2.0/companies({companyId})";
+
+    private Task<ApiResult<T>> SendAsync<T>(HttpMethod method, string url, object? body = null)
     {
-        Console.WriteLine($"🔍 [DEBUG] getEnvironmentInformations called with tenantId: {tenantId}");
-        
-        // Ensure we have authentication
-        await EnsureAuthenticated(tenantId ?? Guid.Empty);
-        
-        // Use the same API endpoint that works in PowerShell - don't filter by tenant ID in query
-        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments";
-        Console.WriteLine($"� [DEBUG] Making API call to: {url}");
-        
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        
-        var response = await staticHttpClient.SendAsync(httpRequest);
-        Console.WriteLine($"� [DEBUG] Response status: {response.StatusCode}");
-        Console.WriteLine($"🔍 [DEBUG] Response headers: {response.Headers}");
-
-        if (response.IsSuccessStatusCode)
+        var request = CreateAuthenticatedRequest(method, url);
+        if (body != null)
         {
-            var responseContent = await response.Content.ReadAsStringAsync();
-            Console.WriteLine($"� [DEBUG] Raw response content length: {responseContent.Length}");
-            Console.WriteLine($"🔍 [DEBUG] Raw response content: {responseContent.Substring(0, Math.Min(500, responseContent.Length))}...");
-            
-            var environmentsResponse = await response.Content.ReadFromJsonAsync(EnvironmentResponseContext.Default.EnvironmentResponse);
-            Console.WriteLine($"🔍 [DEBUG] Deserialized response: {environmentsResponse}");
-            Console.WriteLine($"🔍 [DEBUG] Response.Value: {environmentsResponse?.Value}");
-            Console.WriteLine($"🔍 [DEBUG] Response.Value.Count: {environmentsResponse?.Value?.Count}");
+            request.Content = new StringContent(JsonSerializer.Serialize(body, IgnoreNullsOptions), System.Text.Encoding.UTF8, "application/json");
+        }
+        return SendAsync<T>(request);
+    }
 
-            if (environmentsResponse != null && environmentsResponse.Value != null)
+    // For endpoints whose success response has no meaningful body (204, empty 200/202).
+    private async Task<ApiResult<bool>> SendWithoutResultAsync(HttpMethod method, string url, object? body = null)
+    {
+        var result = await SendAsync<JsonElement?>(method, url, body);
+        return result.Error == null
+            ? new ApiResult<bool> { StatusCode = result.StatusCode, Value = true }
+            : new ApiResult<bool> { StatusCode = result.StatusCode, Error = result.Error, ErrorBody = result.ErrorBody };
+    }
+
+    private async Task<ApiResult<T>> SendAsync<T>(HttpRequestMessage request)
+    {
+        using (request)
+        {
+            Log.Debug($"{request.Method} {request.RequestUri}");
+            try
             {
-                Console.WriteLine($"🔍 [DEBUG] Processing {environmentsResponse.Value.Count} environment objects");
-                
-                foreach (var env in environmentsResponse.Value.Take(1)) // Just debug the first one
+                using var response = await staticHttpClient.SendAsync(request);
+                Log.Debug($"{request.Method} {request.RequestUri} -> {(int)response.StatusCode}");
+                return await ReadApiResult<T>(response);
+            }
+            catch (HttpRequestException ex)
+            {
+                return new ApiResult<T> { Error = $"Request to {request.RequestUri} failed: {ex.Message}" };
+            }
+            catch (TaskCanceledException)
+            {
+                return new ApiResult<T> { Error = $"Request to {request.RequestUri} timed out" };
+            }
+        }
+    }
+
+    private static async Task<ApiResult<T>> ReadApiResult<T>(HttpResponseMessage response)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+        var statusCode = (int)response.StatusCode;
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = DescribeApiError(response, body);
+            Log.Warn(error);
+            return new ApiResult<T> { StatusCode = statusCode, Error = error, ErrorBody = body };
+        }
+
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return new ApiResult<T> { StatusCode = statusCode };
+        }
+
+        try
+        {
+            return new ApiResult<T> { StatusCode = statusCode, Value = JsonSerializer.Deserialize<T>(body) };
+        }
+        catch (JsonException ex)
+        {
+            return new ApiResult<T> { StatusCode = statusCode, Error = $"Unexpected response format: {ex.Message}" };
+        }
+    }
+
+    internal static string DescribeApiError(HttpResponseMessage response, string body)
+    {
+        var prefix = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return prefix;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            // Business Central standard and automation APIs wrap the details in an "error" object.
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("error", out var inner) && inner.ValueKind == JsonValueKind.Object)
+            {
+                root = inner;
+            }
+
+            var code = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("code", out var c) ? c.GetString() : null;
+            var message = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("message", out var m) ? m.GetString() : null;
+            if (code != null || message != null)
+            {
+                var description = $"{prefix}: {code}: {message}";
+                if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object
+                    && data.TryGetProperty("requirements", out var requirements) && requirements.ValueKind == JsonValueKind.Array
+                    && requirements.GetArrayLength() > 0)
                 {
-                    Console.WriteLine($"🔍 [DEBUG] First env - Name: '{env.Name}', Type: '{env.Type}', Status: '{env.Status}'");
-                    Console.WriteLine($"🔍 [DEBUG] First env - FriendlyName: '{env.FriendlyName}', CountryCode: '{env.CountryCode}'");
+                    var items = requirements.EnumerateArray().Select(r =>
+                        $"{(r.TryGetProperty("type", out var t) ? t.GetString() : "?")} {(r.TryGetProperty("name", out var n) ? n.GetString() : "?")} {(r.TryGetProperty("version", out var v) ? v.GetString() : string.Empty)}".Trim());
+                    description += $" (requirements: {string.Join("; ", items)})";
                 }
-                
-                var environments = environmentsResponse.Value.Select(env => new Environment
-                {
-                    Name = env.Name,
-                    Type = env.Type,
-                    CountryCode = env.CountryCode,
-                    TenantId = env.AadTenantId,
-                    Status = env.Status,
-                    LocationName = env.LocationName,
-                    GeoName = env.GeoName,
-                    AppInsightsKey = env.AppInsightsKey
-                }).ToList();
-                
-                Console.WriteLine($"🔍 [DEBUG] Returning {environments.Count} environments");
-                Console.WriteLine($"🔍 [DEBUG] First mapped env - Name: '{environments[0].Name}', Type: '{environments[0].Type}', Status: '{environments[0].Status}'");
-                return environments;
+                return description;
             }
         }
-        else
+        catch (JsonException)
         {
-            var errorContent = await response.Content.ReadAsStringAsync();
-            Console.WriteLine($"❌ [DEBUG] API call failed: {response.StatusCode} - {errorContent}");
         }
 
-        Console.WriteLine($"🔍 [DEBUG] Returning empty list");
-        return new List<Environment>();
+        const int maxBodyLength = 500;
+        var trimmed = body.Trim();
+        return $"{prefix}: {(trimmed.Length > maxBodyLength ? trimmed[..maxBodyLength] + "..." : trimmed)}";
     }
 
-    public async Task<EnvironmentUpdateWindow?> getEnvironmentUpdateWindow(string environmentName, Guid tenantId)
+    public async Task<ApiResult<List<Environment>>> getEnvironmentInformations(Guid? tenantId = null)
     {
-        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/settings/upgrade";
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        var response = await staticHttpClient.SendAsync(httpRequest);
+        await EnsureAuthenticated(tenantId ?? Guid.Empty);
 
-        if (response.IsSuccessStatusCode)
+        var result = await SendAsync<EnvironmentResponse>(HttpMethod.Get, $"{AdminApiBaseUrl}/applications/BusinessCentral/environments");
+        return result.Map(response => (response.Value ?? new List<EnvironmentData>()).Select(env => new Environment
         {
-            var updateWindow = await response.Content.ReadFromJsonAsync(EnvironmentUpdateWindowContext.Default.EnvironmentUpdateWindow);
-            if (updateWindow != null)
-            {
-                updateWindow.TenantId = tenantId;
-                updateWindow.EnvironmentName = environmentName;
-            }
-            return updateWindow;
-        }
-
-        return null;
+            Name = env.Name,
+            Type = env.Type,
+            CountryCode = env.CountryCode,
+            TenantId = env.AadTenantId,
+            Status = env.Status,
+            LocationName = env.LocationName,
+            GeoName = env.GeoName,
+            AppInsightsKey = env.AppInsightsKey
+        }).ToList());
     }
 
-    public async Task<EnvironmentUpdateWindowResponse?> setEnvironmentUpdateWindow(string environmentName, string preferredStartTime, string preferredEndTime, string timeZoneId)
+    public async Task<ApiResult<EnvironmentUpdateWindow>> getEnvironmentUpdateWindow(string environmentName, Guid tenantId)
     {
-        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{environmentName}/settings/upgrade";
+        var result = await SendAsync<EnvironmentUpdateWindow>(HttpMethod.Get, $"{EnvironmentUrl(environmentName)}/settings/upgrade");
+        return result.Map(window =>
+        {
+            window.TenantId = tenantId;
+            window.EnvironmentName = environmentName;
+            return window;
+        });
+    }
 
-        // Use the new wall-time + timezone format (API v2.13+)
+    public Task<ApiResult<EnvironmentUpdateWindowResponse>> setEnvironmentUpdateWindow(string environmentName, string preferredStartTime, string preferredEndTime, string timeZoneId)
+    {
+        // Wall-time + time zone format, API v2.13+
         var requestBody = new
         {
-            preferredStartTime = preferredStartTime,  // Format as "22:00" or "07:30"
-            preferredEndTime = preferredEndTime,      // Format as "06:00" or "12:30"
-            timeZoneId = timeZoneId                   // Windows time zone identifier
+            preferredStartTime,
+            preferredEndTime,
+            timeZoneId
         };
 
-        var jsonContent = JsonSerializer.Serialize(requestBody);
-        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Put, url);
-
-        httpRequest.Content = content;
-
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
-        {
-            var responseContent = await response.Content.ReadAsStringAsync();
-            
-            try 
-            {
-                // Reset the stream position for JSON deserialization
-                var freshContent = new StringContent(responseContent, System.Text.Encoding.UTF8, "application/json");
-                var updateWindowResponse = await freshContent.ReadFromJsonAsync(EnvironmentUpdateWindowResponseContext.Default.EnvironmentUpdateWindowResponse);
-                return updateWindowResponse;
-            }
-            catch (Exception)
-            {
-                return null;
-            }
-        }
-
-        return null;
+        return SendAsync<EnvironmentUpdateWindowResponse>(HttpMethod.Put, $"{EnvironmentUrl(environmentName)}/settings/upgrade", requestBody);
     }
 
-    public async Task<ApplicationInsightsKeyResponse?> setEnvironmentApplicationInsightsConnectionString(string environmentName, string appInsightsKey)
+    public async Task<ApplicationInsightsKeyResponse> setEnvironmentApplicationInsightsConnectionString(string environmentName, string appInsightsKey)
     {
-        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/settings/appinsightskey";
+        var result = await SendWithoutResultAsync(HttpMethod.Post, $"{EnvironmentUrl(environmentName)}/settings/appinsightskey", new { key = appInsightsKey });
 
-        var requestBody = new
+        return new ApplicationInsightsKeyResponse
         {
-            key = appInsightsKey
+            Success = result.Success,
+            Message = result.Success ? $"HTTP {result.StatusCode}" : result.Error
         };
-
-        var jsonContent = JsonSerializer.Serialize(requestBody);
-        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
-
-        httpRequest.Content = content;
-
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        var responseData = new ApplicationInsightsKeyResponse
-        {
-            Success = response.IsSuccessStatusCode,
-            Message = $"{response.StatusCode} {response.ReasonPhrase}"
-        };
-
-        return responseData;
     }
 
-    public async Task<EnvironmentCreationResponse?> createNewEnvironment(string environmentName, string environmentType, string countryCode)
+    public Task<ApiResult<EnvironmentCreationResponse>> createNewEnvironment(string environmentName, string environmentType, string countryCode)
     {
-        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}";
-
         var requestBody = new
         {
             EnvironmentType = environmentType,
             CountryCode = countryCode
         };
 
-        var jsonContent = JsonSerializer.Serialize(requestBody);
-        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Put, url);
-
-        httpRequest.Content = content;
-
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
-        {
-            var creationResponse = await response.Content.ReadFromJsonAsync(EnvironmentCreationResponseContext.Default.EnvironmentCreationResponse);
-            return creationResponse;
-        }
-
-        return null;
+        return SendAsync<EnvironmentCreationResponse>(HttpMethod.Put, EnvironmentUrl(environmentName), requestBody);
     }
 
-    public async Task<EnvironmentCreationResponse?> copyEnvironment(string sourceEnvironmentName, string newEnvironmentName, string newEnvironmentType)
+    public Task<ApiResult<EnvironmentCreationResponse>> copyEnvironment(string sourceEnvironmentName, string newEnvironmentName, string newEnvironmentType)
     {
-        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{newEnvironmentName}/copy";
-
         var requestBody = new
         {
             type = newEnvironmentType,
             environmentName = sourceEnvironmentName
         };
 
-        var jsonContent = JsonSerializer.Serialize(requestBody);
-        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Put, url);
-
-        httpRequest.Content = content;
-
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
-        {
-            var copyResponse = await response.Content.ReadFromJsonAsync(EnvironmentCreationResponseContext.Default.EnvironmentCreationResponse);
-            return copyResponse;
-        }
-
-        return null;
+        return SendAsync<EnvironmentCreationResponse>(HttpMethod.Put, $"{EnvironmentUrl(newEnvironmentName)}/copy", requestBody);
     }
 
-    public async Task<EnvironmentDeletionResponse?> deleteEnvironment(string environmentName)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}";
+    public Task<ApiResult<EnvironmentDeletionResponse>> deleteEnvironment(string environmentName) =>
+        SendAsync<EnvironmentDeletionResponse>(HttpMethod.Delete, EnvironmentUrl(environmentName));
 
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Delete, url);
+    public Task<ApiResult<EnvironmentStorageUsage>> getUsageStorageForEnvironment(string environmentName) =>
+        SendAsync<EnvironmentStorageUsage>(HttpMethod.Get, $"{EnvironmentUrl(environmentName)}/usedstorage");
 
-        var response = await staticHttpClient.SendAsync(httpRequest);
+    public async Task<ApiResult<List<EnvironmentStorageUsage>>> getUsageStorageForAllEnvironments() =>
+        (await SendAsync<EnvironmentStorageUsageListResponse>(HttpMethod.Get, $"{AdminApiBaseUrl}/environments/usedstorage"))
+            .Map(response => response.Value ?? new List<EnvironmentStorageUsage>());
 
-        if (response.StatusCode == System.Net.HttpStatusCode.Accepted)
-        {
-            var deletionResponse = await response.Content.ReadFromJsonAsync(EnvironmentDeletionResponseContext.Default.EnvironmentDeletionResponse);
-            return deletionResponse;
-        }
+    public async Task<ApiResult<List<EnvironmentUpdateInfo>>> getEnvironmentUpdates(string environmentName) =>
+        (await SendAsync<EnvironmentUpdatesListResponse>(HttpMethod.Get, $"{EnvironmentUrl(environmentName)}/updates"))
+            .Map(response => response.Value ?? new List<EnvironmentUpdateInfo>());
 
-        return null;
-    }
+    public Task<ApiResult<SetEnvironmentUpdateResponse>> setEnvironmentUpdate(string environmentName, string targetVersion, SetEnvironmentUpdateRequest? request = null) =>
+        SendAsync<SetEnvironmentUpdateResponse>(HttpMethod.Patch, $"{EnvironmentUrl(environmentName)}/updates/{Uri.EscapeDataString(targetVersion)}", request);
 
-    public async Task<EnvironmentStorageUsage?> getUsageStorageForEnvironment(string environmentName)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/usedstorage";
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        var response = await staticHttpClient.SendAsync(httpRequest);
+    public async Task<ApiResult<List<ActiveSession>>> getActiveSessions(string applicationFamily, string environmentName) =>
+        (await SendAsync<ActiveSessionsResponse>(HttpMethod.Get, $"{EnvironmentUrl(environmentName, applicationFamily)}/sessions"))
+            .Map(response => response.Value ?? new List<ActiveSession>());
 
-        if (response.IsSuccessStatusCode)
-        {
-            var storageUsage = await response.Content.ReadFromJsonAsync(EnvironmentStorageUsageContext.Default.EnvironmentStorageUsage);
-            return storageUsage;
-        }
+    public Task<ApiResult<bool>> killActiveSessions(string applicationFamily, string environmentName, int sessionId) =>
+        SendWithoutResultAsync(HttpMethod.Delete, $"{EnvironmentUrl(environmentName, applicationFamily)}/sessions/{sessionId}");
 
-        return null;
-    }
+    public async Task<ApiResult<List<NotificationRecipient>>> getEnvironmentNotificationRecipient() =>
+        (await SendAsync<NotificationRecipientsResponse>(HttpMethod.Get, $"{AdminApiBaseUrl}/settings/notification/recipients"))
+            .Map(response => response.Value ?? new List<NotificationRecipient>());
 
-    public async Task<List<EnvironmentStorageUsage>?> getUsageStorageForAllEnvironments()
-    {
-        var url = $"{AdminApiBaseUrl}/environments/usedstorage";
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
-        {
-            var storageUsageListResponse = await response.Content.ReadFromJsonAsync(EnvironmentStorageUsageListResponseContext.Default.EnvironmentStorageUsageListResponse);
-
-            if (storageUsageListResponse?.Value != null)
-            {
-                return storageUsageListResponse.Value;
-            }
-        }
-
-        return null;
-    }
-
-    public async Task<List<EnvironmentUpdateInfo>?> getEnvironmentUpdates(string environmentName)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/updates";
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
-        {
-            var updatesListResponse = await response.Content.ReadFromJsonAsync(EnvironmentUpdatesListResponseContext.Default.EnvironmentUpdatesListResponse);
-
-            if (updatesListResponse?.Value != null)
-            {
-                return updatesListResponse.Value;
-            }
-        }
-
-        return null;
-    }
-
-    public async Task<SetEnvironmentUpdateResponse?> setEnvironmentUpdate(string environmentName, string targetVersion, SetEnvironmentUpdateRequest? request = null)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/updates/{targetVersion}";
-
-        string? jsonContent = null;
-        if (request != null)
-        {
-            jsonContent = JsonSerializer.Serialize(request);
-        }
-
-        var content = jsonContent != null ? new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json") : null;
-        var httpRequest = CreateAuthenticatedRequest(new HttpMethod("PATCH"), url);
-        httpRequest.Content = content;
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
-        {
-            var updateResponse = await response.Content.ReadFromJsonAsync(SetEnvironmentUpdateResponseContext.Default.SetEnvironmentUpdateResponse);
-            return updateResponse;
-        }
-
-        return null;
-    }
-
-    public async Task<List<ActiveSession>?> getActiveSessions(string applicationFamily, string environmentName)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/{applicationFamily}/environments/{environmentName}/sessions";
-
-        // Use GET method as per Microsoft documentation
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
-        {
-            var sessionsResponse = await response.Content.ReadFromJsonAsync(ActiveSessionsResponseContext.Default.ActiveSessionsResponse);
-
-            if (sessionsResponse?.Value != null)
-            {
-                return sessionsResponse.Value;
-            }
-        }
-
-        return null;
-    }
-
-    public async Task<bool> killActiveSessions(string applicationFamily, string environmentName, int sessionId)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/{applicationFamily}/environments/{environmentName}/sessions/{sessionId}";
-
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Delete, url);
-
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        return response.IsSuccessStatusCode;
-    }
-
-    public async Task<List<NotificationRecipient>?> getEnvironmentNotificationRecipient()
-    {
-        var url = $"{AdminApiBaseUrl}/settings/notification/recipients";
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
-        {
-            var recipientsResponse = await response.Content.ReadFromJsonAsync(NotificationRecipientsResponseContext.Default.NotificationRecipientsResponse);
-
-            if (recipientsResponse?.Value != null)
-            {
-                return recipientsResponse.Value;
-            }
-        }
-
-        return null;
-    }
-
-    public async Task<NotificationRecipient?> createEnvironmentNotificationRecipient(string email, string name)
-    {
-        var url = $"{AdminApiBaseUrl}/settings/notification/recipients";
-
-        var requestBody = new CreateNotificationRecipientRequest
+    public Task<ApiResult<NotificationRecipient>> createEnvironmentNotificationRecipient(string email, string name) =>
+        SendAsync<NotificationRecipient>(HttpMethod.Put, $"{AdminApiBaseUrl}/settings/notification/recipients", new CreateNotificationRecipientRequest
         {
             Email = email,
             Name = name
-        };
+        });
 
-        var jsonContent = JsonSerializer.Serialize(requestBody);
-        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
+    public Task<ApiResult<bool>> deleteEnvironmentNotificationRecipient(Guid recipientId) =>
+        SendWithoutResultAsync(HttpMethod.Delete, $"{AdminApiBaseUrl}/settings/notification/recipients/{recipientId}");
 
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Put, url);
+    public async Task<ApiResult<List<InstalledApp>>> getInstalledApps(string environmentName) =>
+        (await getInstalledAppsResult(environmentName)).Map(response => response.Value ?? new List<InstalledApp>());
 
-        httpRequest.Content = content;
+    public Task<ApiResult<InstalledAppsResponse>> getInstalledAppsResult(string environmentName) =>
+        SendAsync<InstalledAppsResponse>(HttpMethod.Get, $"{EnvironmentUrl(environmentName)}/apps");
 
-        var response = await staticHttpClient.SendAsync(httpRequest);
+    public async Task<ApiResult<List<AvailableAppUpdate>>> getAvailableAppUpdates(string environmentName) =>
+        (await getAvailableAppUpdatesResult(environmentName)).Map(response => response.Value ?? new List<AvailableAppUpdate>());
 
-        if (response.IsSuccessStatusCode)
-        {
-            var recipient = await response.Content.ReadFromJsonAsync(CreateNotificationRecipientResponseContext.Default.NotificationRecipient);
-            return recipient;
-        }
+    public Task<ApiResult<AvailableAppUpdatesResponse>> getAvailableAppUpdatesResult(string environmentName) =>
+        SendAsync<AvailableAppUpdatesResponse>(HttpMethod.Get, $"{EnvironmentUrl(environmentName)}/apps/availableUpdates");
 
-        return null;
-    }
-
-    public async Task<bool> deleteEnvironmentNotificationRecipient(Guid recipientId)
-    {
-        var url = $"{AdminApiBaseUrl}/settings/notification/recipients/{recipientId}";
-
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Delete, url);
-
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        return response.IsSuccessStatusCode;
-    }
-
-    public async Task<List<InstalledApp>?> getInstalledApps(string environmentName)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/apps";
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
-        {
-            var appsResponse = await response.Content.ReadFromJsonAsync(InstalledAppsResponseContext.Default.InstalledAppsResponse);
-
-            if (appsResponse?.Value != null)
-            {
-                return appsResponse.Value;
-            }
-        }
-
-        return null;
-    }
-
-    public async Task<List<AvailableAppUpdate>?> getAvailableAppUpdates(string environmentName)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/apps/availableUpdates";
-        
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
-        {
-            var updatesResponse = await response.Content.ReadFromJsonAsync(AvailableAppUpdatesResponseContext.Default.AvailableAppUpdatesResponse);
-
-            if (updatesResponse?.Value != null)
-            {
-                return updatesResponse.Value;
-            }
-        }
-
-        return null;
-    }
-
-    public async Task<List<Feature>?> getAvailableFeatures(Guid tenantId, string environmentName, Guid companyId)
+    public async Task<ApiResult<List<Feature>>> getAvailableFeatures(Guid tenantId, string environmentName, Guid companyId)
     {
         await EnsureAuthenticated(tenantId);
-        
-        // Using the confirmed correct API endpoint
-        var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/features";
-        
-        Console.WriteLine($"🔍 [DEBUG] Making Automation API request to: {url}");
-        Console.WriteLine($"🔍 [DEBUG] Using token: {_accessToken?.Substring(0, 50)}...");
-        
-        try
-        {
-            var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-            var response = await staticHttpClient.SendAsync(httpRequest);
-            Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
-            Console.WriteLine($"🔍 [DEBUG] Response headers: {string.Join(", ", response.Headers.Select(h => $"{h.Key}: {string.Join(", ", h.Value)}"))}");
-            
-            if (response.IsSuccessStatusCode)
-            {
-                var responseContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"🔍 [DEBUG] Success! Response content: {responseContent}");
-                
-                var featuresResponse = await response.Content.ReadFromJsonAsync(FeaturesResponseContext.Default.FeaturesResponse);
-
-                if (featuresResponse?.Value != null)
-                {
-                    return featuresResponse.Value;
-                }
-            }
-            else
-            {
-                var errorContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"❌ [DEBUG] HTTP {response.StatusCode} Error response: {errorContent}");
-                Console.WriteLine($"❌ [DEBUG] Response reason phrase: {response.ReasonPhrase}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"❌ [DEBUG] Exception in getAvailableFeatures: {ex.Message}");
-            Console.WriteLine($"❌ [DEBUG] Full exception: {ex}");
-        }
-
-        return null;
+        return (await SendAsync<FeaturesResponse>(HttpMethod.Get, $"{AutomationCompanyUrl(environmentName, companyId)}/features"))
+            .Map(response => response.Value ?? new List<Feature>());
     }
 
-    public async Task<bool> activateFeature(Guid tenantId, string environmentName, Guid companyId, string featureId, bool updateInBackground = true, DateTime? startDateTime = null)
+    public async Task<ApiResult<bool>> activateFeature(Guid tenantId, string environmentName, Guid companyId, string featureId, bool updateInBackground = true, DateTime? startDateTime = null)
     {
         await EnsureAuthenticated(tenantId);
-        
-        // API endpoint for feature activation - featureId must be wrapped in single quotes
-        var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/features('{featureId}')/Microsoft.NAV.activate";
-        
-        Console.WriteLine($"🔍 [DEBUG] Activating feature {featureId} at: {url}");
-        Console.WriteLine($"🔍 [DEBUG] Using token: {_accessToken?.Substring(0, 50)}...");
-        
-        // Prepare request body
+
         var requestBody = new
         {
-            updateInBackground = updateInBackground,
+            updateInBackground,
             startDateTime = (startDateTime ?? DateTime.UtcNow).ToString("yyyy-MM-ddTHH:mm:ssZ")
         };
-        
-        var jsonContent = JsonSerializer.Serialize(requestBody);
-        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-        
-        Console.WriteLine($"🔍 [DEBUG] Request body: {jsonContent}");
-        
-        try
-        {
-            var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
-            httpRequest.Content = content;
-            var response = await staticHttpClient.SendAsync(httpRequest);
-            Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
-            
-            if (response.IsSuccessStatusCode)
-            {
-                var responseContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"✅ [DEBUG] Feature activation initiated successfully");
-                Console.WriteLine($"🔍 [DEBUG] Response content: {responseContent}");
-                return true;
-            }
-            else
-            {
-                var errorContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"❌ [DEBUG] HTTP {response.StatusCode} Error response: {errorContent}");
-                Console.WriteLine($"❌ [DEBUG] Response reason phrase: {response.ReasonPhrase}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"❌ [DEBUG] Exception in activateFeature: {ex.Message}");
-            Console.WriteLine($"❌ [DEBUG] Full exception: {ex}");
-        }
 
-        return false;
+        return await SendWithoutResultAsync(HttpMethod.Post, $"{AutomationCompanyUrl(environmentName, companyId)}/features('{EscapeODataKey(featureId)}')/Microsoft.NAV.activate", requestBody);
     }
 
-    public async Task<bool> deactivateFeature(Guid tenantId, string environmentName, Guid companyId, string featureId)
+    public async Task<ApiResult<bool>> deactivateFeature(Guid tenantId, string environmentName, Guid companyId, string featureId)
     {
         await EnsureAuthenticated(tenantId);
-        
-        // API endpoint for feature deactivation - featureId must be wrapped in single quotes
-        var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/features('{featureId}')/Microsoft.NAV.deactivate";
-        
-        Console.WriteLine($"🔍 [DEBUG] Deactivating feature {featureId} at: {url}");
-        Console.WriteLine($"🔍 [DEBUG] Using token: {_accessToken?.Substring(0, 50)}...");
-        
-        // Empty request body for deactivation
-        var content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
-        
-        try
-        {
-            var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
-            httpRequest.Content = content;
-            var response = await staticHttpClient.SendAsync(httpRequest);
-            Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
-            
-            if (response.IsSuccessStatusCode)
-            {
-                var responseContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"✅ [DEBUG] Feature deactivation initiated successfully");
-                Console.WriteLine($"🔍 [DEBUG] Response content: {responseContent}");
-                return true;
-            }
-            else
-            {
-                var errorContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"❌ [DEBUG] HTTP {response.StatusCode} Error response: {errorContent}");
-                Console.WriteLine($"❌ [DEBUG] Response reason phrase: {response.ReasonPhrase}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"❌ [DEBUG] Exception in deactivateFeature: {ex.Message}");
-            Console.WriteLine($"❌ [DEBUG] Full exception: {ex}");
-        }
-
-        return false;
+        return await SendWithoutResultAsync(HttpMethod.Post, $"{AutomationCompanyUrl(environmentName, companyId)}/features('{EscapeODataKey(featureId)}')/Microsoft.NAV.deactivate", new { });
     }
 
-    public async Task<List<Company>?> getEnvironmentCompanies(string environmentName)
+    private static string EscapeODataKey(string key) => Uri.EscapeDataString(key.Replace("'", "''"));
+
+    public async Task<ApiResult<List<Company>>> getEnvironmentCompanies(string environmentName) =>
+        (await SendAsync<CompaniesResponse>(HttpMethod.Get, $"https://api.businesscentral.dynamics.com/v2.0/{Uri.EscapeDataString(environmentName)}/api/v2.0/companies"))
+            .Map(response => response.Value ?? new List<Company>());
+
+    public Task<ApiResult<UpdateAppResponse>> updateApp(string environmentName, Guid appId, UpdateAppRequest request) =>
+        SendAsync<UpdateAppResponse>(HttpMethod.Post, $"{EnvironmentUrl(environmentName)}/apps/{appId}/update", request);
+
+    public Task<ApiResult<InstallAppResponse>> installApp(string applicationFamily, string environmentName, Guid appId, InstallAppRequest request) =>
+        SendAsync<InstallAppResponse>(HttpMethod.Post, $"{EnvironmentUrl(environmentName, applicationFamily)}/apps/{appId}/install", request);
+
+    public Task<ApiResult<UninstallAppResponse>> uninstallApp(string environmentName, Guid appId, UninstallAppRequest request) =>
+        SendAsync<UninstallAppResponse>(HttpMethod.Post, $"{EnvironmentUrl(environmentName)}/apps/{appId}/uninstall", request);
+
+    public async Task<ApiResult<List<AppOperation>>> getAppOperations(string environmentName, Guid appId, Guid? operationId = null)
     {
-        var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/v2.0/companies";
-        
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
+        if (operationId.HasValue)
         {
-            var companiesResponse = await response.Content.ReadFromJsonAsync(CompaniesResponseContext.Default.CompaniesResponse);
-
-            if (companiesResponse?.Value != null)
-            {
-                return companiesResponse.Value;
-            }
+            return (await getAppOperation(environmentName, appId, operationId.Value)).Map(operation => new List<AppOperation> { operation });
         }
 
-        return null;
+        return (await SendAsync<AppOperationsResponse>(HttpMethod.Get, $"{EnvironmentUrl(environmentName)}/apps/{appId}/operations"))
+            .Map(response => response.Value ?? new List<AppOperation>());
     }
 
-    public async Task<UpdateAppResponse?> updateApp(string environmentName, Guid appId, UpdateAppRequest request)
+    // The single-operation endpoint returns the operation object directly, while the list endpoint wraps it in "value".
+    public async Task<ApiResult<AppOperation>> getAppOperation(string environmentName, Guid appId, Guid operationId)
     {
-        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/apps/{appId}/update";
-
-        var jsonContent = JsonSerializer.Serialize(request);
-        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
-
-        httpRequest.Content = content;
-
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
+        var result = await SendAsync<JsonElement>(HttpMethod.Get, $"{EnvironmentUrl(environmentName)}/apps/{appId}/operations/{operationId}");
+        if (result.Error != null)
         {
-            var updateResponse = await response.Content.ReadFromJsonAsync(UpdateAppResponseContext.Default.UpdateAppResponse);
-            return updateResponse;
+            return new ApiResult<AppOperation> { StatusCode = result.StatusCode, Error = result.Error, ErrorBody = result.ErrorBody };
         }
 
-        return null;
-    }
-
-    public async Task<InstallAppResult> installApp(string applicationFamily, string environmentName, Guid appId, InstallAppRequest request)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/{applicationFamily}/environments/{environmentName}/apps/{appId}/install";
-
-        var jsonContent = JsonSerializer.Serialize(request);
-        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
-        httpRequest.Content = content;
-
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
+        var element = result.Value;
+        if (element.ValueKind == JsonValueKind.Object && element.TryGetProperty("value", out var list) && list.ValueKind == JsonValueKind.Array)
         {
-            var installResponse = await response.Content.ReadFromJsonAsync(InstallAppResponseContext.Default.InstallAppResponse);
-            return new InstallAppResult { Response = installResponse };
+            element = list.EnumerateArray().FirstOrDefault(op =>
+                op.TryGetProperty("id", out var id) && Guid.TryParse(id.GetString(), out var parsed) && parsed == operationId);
         }
 
-        if ((int)response.StatusCode == 400)
+        if (element.ValueKind != JsonValueKind.Object)
         {
-            var errorResponse = await response.Content.ReadFromJsonAsync<UpdateAppErrorResponse>();
-            return new InstallAppResult { Error = errorResponse };
+            return new ApiResult<AppOperation> { StatusCode = result.StatusCode, Error = $"Operation {operationId} not found" };
         }
 
-        return new InstallAppResult();
-    }
-
-    public async Task<UninstallAppResponse?> uninstallApp(string environmentName, Guid appId, UninstallAppRequest request)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/apps/{appId}/uninstall";
-
-        var jsonContent = JsonSerializer.Serialize(request);
-        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
-
-        httpRequest.Content = content;
-
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
-        {
-            var uninstallResponse = await response.Content.ReadFromJsonAsync(UninstallAppResponseContext.Default.UninstallAppResponse);
-            return uninstallResponse;
-        }
-
-        return null;
-    }
-
-    public async Task<List<AppOperation>?> getAppOperations(string environmentName, Guid appId, Guid? operationId = null)
-    {
-        var url = operationId.HasValue
-            ? $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/apps/{appId}/operations/{operationId}"
-            : $"{AdminApiBaseUrl}/applications/businesscentral/environments/{environmentName}/apps/{appId}/operations";
-
-        var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-
-        var response = await staticHttpClient.SendAsync(httpRequest);
-
-        if (response.IsSuccessStatusCode)
-        {
-            var operationsResponse = await response.Content.ReadFromJsonAsync(AppOperationsResponseContext.Default.AppOperationsResponse);
-
-            if (operationsResponse?.Value != null)
-            {
-                return operationsResponse.Value;
-            }
-        }
-
-        return null;
+        return new ApiResult<AppOperation> { StatusCode = result.StatusCode, Value = element.Deserialize<AppOperation>() };
     }
 
     internal static readonly string[] PteDeploymentSchedules = { "Immediate", "UpdateWindow", "NextMinorUpdate", "NextMajorUpdate" };
@@ -2401,11 +1841,9 @@ public class D365BCAdminService : IDisposable
     internal static string? NormalizePteValue(string? value, string[] allowedValues) =>
         allowedValues.FirstOrDefault(v => string.Equals(v, value?.Trim(), StringComparison.OrdinalIgnoreCase));
 
-    public async Task<PteApiResult<PteOperation>> installPte(string environmentName, string appFilePath, PteInstallOptions options)
+    public async Task<ApiResult<PteOperation>> installPte(string environmentName, string appFilePath, PteInstallOptions options)
     {
-        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/pteInstall";
-
-        using var form = new MultipartFormDataContent();
+        var form = new MultipartFormDataContent();
         var fileContent = new ByteArrayContent(await File.ReadAllBytesAsync(appFilePath));
         fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         form.Add(fileContent, "extensionFile", Path.GetFileName(appFilePath));
@@ -2418,103 +1856,16 @@ public class D365BCAdminService : IDisposable
             form.Add(new StringContent(options.LanguageId), "languageId");
         }
 
-        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
-        httpRequest.Content = form;
-
-        using var response = await staticHttpClient.SendAsync(httpRequest);
-        return await ReadPteApiResult<PteOperation>(response);
+        var request = CreateAuthenticatedRequest(HttpMethod.Post, $"{EnvironmentUrl(environmentName)}/apps/pteInstall");
+        request.Content = form;
+        return await SendAsync<PteOperation>(request);
     }
 
-    public async Task<PteApiResult<ScheduledPteOperationsResponse>> getScheduledPteOperations(string environmentName)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/scheduledPteOperations";
+    public Task<ApiResult<ScheduledPteOperationsResponse>> getScheduledPteOperations(string environmentName) =>
+        SendAsync<ScheduledPteOperationsResponse>(HttpMethod.Get, $"{EnvironmentUrl(environmentName)}/apps/scheduledPteOperations");
 
-        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        using var response = await staticHttpClient.SendAsync(httpRequest);
-        return await ReadPteApiResult<ScheduledPteOperationsResponse>(response);
-    }
-
-    public async Task<PteApiResult<PteOperation>> removeScheduledPteVersion(string environmentName, Guid appId, RemoveScheduledPteVersionRequest request)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/{appId}/removeScheduledPteVersion";
-
-        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
-        httpRequest.Content = new StringContent(JsonSerializer.Serialize(request), System.Text.Encoding.UTF8, "application/json");
-
-        using var response = await staticHttpClient.SendAsync(httpRequest);
-        return await ReadPteApiResult<PteOperation>(response);
-    }
-
-    private static readonly JsonSerializerOptions IgnoreNullsOptions = new() { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
-
-    public async Task<PteApiResult<InstalledAppsResponse>> getInstalledAppsResult(string environmentName)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps";
-
-        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        using var response = await staticHttpClient.SendAsync(httpRequest);
-        return await ReadPteApiResult<InstalledAppsResponse>(response);
-    }
-
-    public async Task<PteApiResult<AvailableAppUpdatesResponse>> getAvailableAppUpdatesResult(string environmentName)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/availableUpdates";
-
-        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        using var response = await staticHttpClient.SendAsync(httpRequest);
-        return await ReadPteApiResult<AvailableAppUpdatesResponse>(response);
-    }
-
-    public async Task<PteApiResult<PteOperation>> installGlobalApp(string environmentName, Guid appId, InstallAppRequest request)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/{appId}/install";
-
-        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
-        httpRequest.Content = new StringContent(JsonSerializer.Serialize(request, IgnoreNullsOptions), System.Text.Encoding.UTF8, "application/json");
-
-        using var response = await staticHttpClient.SendAsync(httpRequest);
-        return await ReadPteApiResult<PteOperation>(response);
-    }
-
-    public async Task<PteApiResult<PteOperation>> updateGlobalApp(string environmentName, Guid appId, UpdateAppRequest request)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/{appId}/update";
-
-        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
-        httpRequest.Content = new StringContent(JsonSerializer.Serialize(request, IgnoreNullsOptions), System.Text.Encoding.UTF8, "application/json");
-
-        using var response = await staticHttpClient.SendAsync(httpRequest);
-        return await ReadPteApiResult<PteOperation>(response);
-    }
-
-    // The single-operation endpoint returns the operation object directly, while the list endpoint wraps it in "value".
-    public async Task<PteApiResult<AppOperation>> getAppOperation(string environmentName, Guid appId, Guid operationId)
-    {
-        var url = $"{AdminApiBaseUrl}/applications/BusinessCentral/environments/{Uri.EscapeDataString(environmentName)}/apps/{appId}/operations/{operationId}";
-
-        using var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-        using var response = await staticHttpClient.SendAsync(httpRequest);
-        var body = await response.Content.ReadAsStringAsync();
-
-        if (!response.IsSuccessStatusCode)
-        {
-            return new PteApiResult<AppOperation> { StatusCode = (int)response.StatusCode, Error = DescribeApiError(response, body) };
-        }
-
-        using var doc = JsonDocument.Parse(body);
-        var element = doc.RootElement;
-        if (element.TryGetProperty("value", out var list) && list.ValueKind == JsonValueKind.Array)
-        {
-            element = list.EnumerateArray().FirstOrDefault(op =>
-                op.TryGetProperty("id", out var id) && Guid.TryParse(id.GetString(), out var parsed) && parsed == operationId);
-            if (element.ValueKind == JsonValueKind.Undefined)
-            {
-                return new PteApiResult<AppOperation> { StatusCode = (int)response.StatusCode, Error = $"Operation {operationId} not found" };
-            }
-        }
-
-        return new PteApiResult<AppOperation> { StatusCode = (int)response.StatusCode, Value = element.Deserialize<AppOperation>() };
-    }
+    public Task<ApiResult<PteOperation>> removeScheduledPteVersion(string environmentName, Guid appId, RemoveScheduledPteVersionRequest request) =>
+        SendAsync<PteOperation>(HttpMethod.Post, $"{EnvironmentUrl(environmentName)}/apps/{appId}/removeScheduledPteVersion", request);
 
     public async Task<(AppOperation? Operation, bool TimedOut, string? Error)> waitForAppOperation(string environmentName, Guid appId, Guid operationId, int maxWaitSeconds, int pollIntervalMs)
     {
@@ -2537,7 +1888,7 @@ public class D365BCAdminService : IDisposable
             else
             {
                 lastError = result.Error;
-                Console.Error.WriteLine($"⚠️ [DEBUG] Polling operation {operationId} failed: {result.Error}");
+                Log.Warn($"Polling operation {operationId} failed: {result.Error}");
             }
 
             await Task.Delay(pollIntervalMs);
@@ -2546,103 +1897,11 @@ public class D365BCAdminService : IDisposable
         return (lastOperation, true, lastError);
     }
 
-    private static async Task<PteApiResult<T>> ReadPteApiResult<T>(HttpResponseMessage response)
-    {
-        var body = await response.Content.ReadAsStringAsync();
-        var statusCode = (int)response.StatusCode;
-
-        if (!response.IsSuccessStatusCode)
-        {
-            return new PteApiResult<T> { StatusCode = statusCode, Error = DescribeApiError(response, body) };
-        }
-
-        try
-        {
-            return new PteApiResult<T> { StatusCode = statusCode, Value = JsonSerializer.Deserialize<T>(body) };
-        }
-        catch (JsonException ex)
-        {
-            return new PteApiResult<T> { StatusCode = statusCode, Error = $"Unexpected response format: {ex.Message}" };
-        }
-    }
-
-    private static string DescribeApiError(HttpResponseMessage response, string body)
-    {
-        var prefix = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            return prefix;
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(body);
-            var root = doc.RootElement;
-            var code = root.TryGetProperty("code", out var c) ? c.GetString() : null;
-            var message = root.TryGetProperty("message", out var m) ? m.GetString() : null;
-            if (code != null || message != null)
-            {
-                var description = $"{prefix}: {code}: {message}";
-                if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object
-                    && data.TryGetProperty("requirements", out var requirements) && requirements.ValueKind == JsonValueKind.Array
-                    && requirements.GetArrayLength() > 0)
-                {
-                    var items = requirements.EnumerateArray().Select(r =>
-                        $"{(r.TryGetProperty("type", out var t) ? t.GetString() : "?")} {(r.TryGetProperty("name", out var n) ? n.GetString() : "?")} {(r.TryGetProperty("version", out var v) ? v.GetString() : string.Empty)}".Trim());
-                    description += $" (requirements: {string.Join("; ", items)})";
-                }
-                return description;
-            }
-        }
-        catch (JsonException)
-        {
-        }
-
-        return $"{prefix}: {body}";
-    }
-
-    public async Task<List<ExtensionDeploymentStatus>?> getExtensionDeploymentStatus(Guid tenantId, string environmentName, Guid companyId)
+    public async Task<ApiResult<List<ExtensionDeploymentStatus>>> getExtensionDeploymentStatus(Guid tenantId, string environmentName, Guid companyId)
     {
         await EnsureAuthenticated(tenantId);
-        
-        // API endpoint for extension deployment status
-        var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionDeploymentStatus";
-        
-        Console.WriteLine($"🔍 [DEBUG] Making Automation API request to: {url}");
-        Console.WriteLine($"🔍 [DEBUG] Using token: {_accessToken?.Substring(0, 50)}...");
-        
-        try
-        {
-            var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-            var response = await staticHttpClient.SendAsync(httpRequest);
-            Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
-            
-            if (response.IsSuccessStatusCode)
-            {
-                var responseContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"🔍 [DEBUG] Success! Response content: {responseContent}");
-                
-                var extensionDeploymentStatusResponse = await response.Content.ReadFromJsonAsync(ExtensionDeploymentStatusResponseContext.Default.ExtensionDeploymentStatusResponse);
-
-                if (extensionDeploymentStatusResponse?.Value != null)
-                {
-                    return extensionDeploymentStatusResponse.Value;
-                }
-            }
-            else
-            {
-                var errorContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"❌ [DEBUG] HTTP {response.StatusCode} Error response: {errorContent}");
-                Console.WriteLine($"❌ [DEBUG] Response reason phrase: {response.ReasonPhrase}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"❌ [DEBUG] Exception in getExtensionDeploymentStatus: {ex.Message}");
-            Console.WriteLine($"❌ [DEBUG] Full exception: {ex}");
-        }
-
-        return null;
+        return (await SendAsync<ExtensionDeploymentStatusResponse>(HttpMethod.Get, $"{AutomationCompanyUrl(environmentName, companyId)}/extensionDeploymentStatus"))
+            .Map(response => response.Value ?? new List<ExtensionDeploymentStatus>());
     }
 
     public async Task<ExtensionUploadResponse?> createExtensionUpload(Guid tenantId, string environmentName, Guid companyId, string schedule, string schemaSyncMode)
@@ -2652,18 +1911,16 @@ public class D365BCAdminService : IDisposable
         // API endpoint for creating extension upload
         var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload";
         
-        Console.WriteLine($"🔍 [DEBUG] Making Automation API request to: {url}");
-        Console.WriteLine($"🔍 [DEBUG] Using token: {_accessToken?.Substring(0, 50)}...");
+        Log.Debug($"Making Automation API request to: {url}");
         
         try
         {
             // First, try to get existing extension uploads to see the current state
-            Console.WriteLine($"🔍 [DEBUG] Checking for existing extension uploads...");
+            Log.Debug($"Checking for existing extension uploads...");
             var getResponse = await staticHttpClient.GetAsync(url);
             if (getResponse.IsSuccessStatusCode)
             {
                 var existingContent = await getResponse.Content.ReadAsStringAsync();
-                Console.WriteLine($"🔍 [DEBUG] Existing uploads found: {existingContent.Substring(0, Math.Min(200, existingContent.Length))}...");
             }
             
             // Create request body
@@ -2676,19 +1933,17 @@ public class D365BCAdminService : IDisposable
             var jsonContent = JsonSerializer.Serialize(requestBody, ExtensionUploadRequestContext.Default.ExtensionUploadRequest);
             var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
             
-            Console.WriteLine($"🔍 [DEBUG] Request body: {jsonContent}");
             
             // Try POST first (standard REST convention)
             var httpRequest = CreateAuthenticatedRequest(HttpMethod.Post, url);
             httpRequest.Content = content;
             var response = await staticHttpClient.SendAsync(httpRequest);
-            Console.WriteLine($"🔍 [DEBUG] POST Response status: {response.StatusCode}");
+            Log.Debug($"POST Response status: {response.StatusCode}");
             
             if (response.IsSuccessStatusCode && response.StatusCode == System.Net.HttpStatusCode.Created)
             {
                 var responseContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"✅ [DEBUG] Extension upload created successfully");
-                Console.WriteLine($"🔍 [DEBUG] Response content: {responseContent}");
+                Log.Debug($"Extension upload created successfully");
                 
                 var uploadResponse = await response.Content.ReadFromJsonAsync(ExtensionUploadResponseContext.Default.ExtensionUploadResponse);
                 return uploadResponse;
@@ -2696,22 +1951,19 @@ public class D365BCAdminService : IDisposable
             else if (response.StatusCode == System.Net.HttpStatusCode.BadRequest)
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"🔍 [DEBUG] POST returned BadRequest");
-                Console.WriteLine($"❌ [DEBUG] Full error response: {errorContent}");
-                Console.WriteLine($"❌ [DEBUG] Response headers: {string.Join(", ", response.Headers.Select(h => $"{h.Key}={string.Join("|", h.Value)}"))}");
-                Console.WriteLine($"❌ [DEBUG] Content headers: {string.Join(", ", response.Content.Headers.Select(h => $"{h.Key}={string.Join("|", h.Value)}"))}");
+                Log.Debug($"POST returned BadRequest");
+                Log.Error($"Full error response: {errorContent}");
                 
                 // If POST fails, it's likely because a record already exists
                 // Always try to retrieve the existing record
-                Console.WriteLine($"🔍 [DEBUG] Attempting to retrieve existing extension upload record...");
+                Log.Debug($"Attempting to retrieve existing extension upload record...");
                 
                 // Try listing all and getting the first one
-                Console.WriteLine($"🔍 [DEBUG] Attempting to list all extension uploads to find existing record...");
+                Log.Debug($"Attempting to list all extension uploads to find existing record...");
                 var listResponse = await staticHttpClient.GetAsync(url);
                 if (listResponse.IsSuccessStatusCode)
                 {
                     var listContent = await listResponse.Content.ReadAsStringAsync();
-                    Console.WriteLine($"🔍 [DEBUG] List response: {listContent.Substring(0, Math.Min(300, listContent.Length))}...");
                     
                     // Try to parse as a collection response
                     try
@@ -2726,7 +1978,7 @@ public class D365BCAdminService : IDisposable
                                 var firstRecord = JsonSerializer.Deserialize(firstElement.GetRawText(), ExtensionUploadResponseContext.Default.ExtensionUploadResponse);
                                 if (firstRecord != null)
                                 {
-                                    Console.WriteLine($"✅ [DEBUG] Found existing extension upload in list with ID: {firstRecord.SystemId}");
+                                    Log.Debug($"Found existing extension upload in list with ID: {firstRecord.SystemId}");
                                     return firstRecord;
                                 }
                             }
@@ -2734,25 +1986,24 @@ public class D365BCAdminService : IDisposable
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"🔍 [DEBUG] Failed to parse list response: {ex.Message}");
+                        Log.Debug($"Failed to parse list response: {ex.Message}");
                     }
                 }
                 else
                 {
-                    Console.WriteLine($"🔍 [DEBUG] Failed to list extension uploads: HTTP {listResponse.StatusCode}");
+                    Log.Debug($"Failed to list extension uploads: HTTP {listResponse.StatusCode}");
                 }
             }
             else
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"❌ [DEBUG] HTTP {response.StatusCode} Error response: {errorContent}");
-                Console.WriteLine($"❌ [DEBUG] Response reason phrase: {response.ReasonPhrase}");
+                Log.Error($"HTTP {response.StatusCode} Error response: {errorContent}");
+                Log.Error($"Response reason phrase: {response.ReasonPhrase}");
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ [DEBUG] Exception in createExtensionUpload: {ex.Message}");
-            Console.WriteLine($"❌ [DEBUG] Full exception: {ex}");
+            Log.Error($"Exception in createExtensionUpload: {ex.Message}");
         }
 
         return null;
@@ -2765,50 +2016,46 @@ public class D365BCAdminService : IDisposable
         // Validate file exists
         if (!File.Exists(appFilePath))
         {
-            Console.WriteLine($"❌ [DEBUG] File not found: {appFilePath}");
+            Log.Error($"File not found: {appFilePath}");
             return false;
         }
         
-        Console.WriteLine($"🔍 [DEBUG] Reading file: {appFilePath}");
+        Log.Debug($"Reading file: {appFilePath}");
         
         try
         {
             // Read the .app file as binary FIRST before getting the record
             var fileBytes = await File.ReadAllBytesAsync(appFilePath);
-            Console.WriteLine($"🔍 [DEBUG] File size: {fileBytes.Length} bytes");
+            Log.Debug($"File size: {fileBytes.Length} bytes");
             
             if (fileBytes.Length == 0)
             {
-                Console.WriteLine($"❌ [DEBUG] File is empty!");
+                Log.Error($"File is empty!");
                 return false;
             }
             
             // Now GET the extension upload record to retrieve the etag (concurrency token)
             var getUrl = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload({extensionUploadId})";
-            Console.WriteLine($"🔍 [DEBUG] Getting extension upload record to retrieve etag from: {getUrl}");
+            Log.Debug($"Getting extension upload record to retrieve etag from: {getUrl}");
             
             var getResponse = await staticHttpClient.GetAsync(getUrl);
             if (!getResponse.IsSuccessStatusCode)
             {
                 var errorContent = await getResponse.Content.ReadAsStringAsync();
-                Console.WriteLine($"❌ [DEBUG] Failed to GET extension upload record: HTTP {getResponse.StatusCode}: {errorContent}");
+                Log.Error($"Failed to GET extension upload record: HTTP {getResponse.StatusCode}: {errorContent}");
                 return false;
             }
             
             // Extract etag from response headers
             string? etag = null;
-            Console.WriteLine($"🔍 [DEBUG] Response headers: {string.Join(", ", getResponse.Headers.Select(h => $"{h.Key}={string.Join("|", h.Value)}"))}");
-            Console.WriteLine($"🔍 [DEBUG] Content headers: {string.Join(", ", getResponse.Content.Headers.Select(h => $"{h.Key}={string.Join("|", h.Value)}"))}");
             
             if (getResponse.Headers.TryGetValues("etag", out var etagValues))
             {
                 etag = etagValues.FirstOrDefault();
-                Console.WriteLine($"🔍 [DEBUG] Retrieved etag from response headers: {etag}");
             }
             else if (getResponse.Content.Headers.TryGetValues("etag", out var contentEtagValues))
             {
                 etag = contentEtagValues.FirstOrDefault();
-                Console.WriteLine($"🔍 [DEBUG] Retrieved etag from content headers: {etag}");
             }
             else
             {
@@ -2818,14 +2065,13 @@ public class D365BCAdminService : IDisposable
                 if (!string.IsNullOrEmpty(etagHeader.Key))
                 {
                     etag = etagHeader.Value.FirstOrDefault();
-                    Console.WriteLine($"🔍 [DEBUG] Retrieved etag via case-insensitive search: {etag}");
                 }
             }
             
             if (string.IsNullOrEmpty(etag))
             {
                 // Fallback: use "*" as the wildcard for If-Match
-                Console.WriteLine($"⚠️ [DEBUG] Could not retrieve etag from GET response, using wildcard '*' for If-Match");
+                Log.Warn($"Could not retrieve etag from GET response, using wildcard '*' for If-Match");
                 etag = "*";
             }
             
@@ -2833,14 +2079,13 @@ public class D365BCAdminService : IDisposable
             var patchContent = new ByteArrayContent(fileBytes);
             patchContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
             
-            Console.WriteLine($"🔍 [DEBUG] Binary content size: {fileBytes.Length} bytes");
-            Console.WriteLine($"🔍 [DEBUG] Content-Type will be: application/octet-stream");
-            Console.WriteLine($"🔍 [DEBUG] Using If-Match header value: {etag}");
-            Console.WriteLine($"🔍 [DEBUG] Sending PATCH request with binary content and If-Match header...");
+            Log.Debug($"Binary content size: {fileBytes.Length} bytes");
+            Log.Debug($"Content-Type will be: application/octet-stream");
+            Log.Debug($"Sending PATCH request with binary content and If-Match header...");
             
             // API endpoint for uploading extension content
             var patchUrl = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload({extensionUploadId})/extensionContent";
-            Console.WriteLine($"🔍 [DEBUG] PATCH URL: {patchUrl}");
+            Log.Debug($"PATCH URL: {patchUrl}");
             
             // Create a custom request with If-Match header (must be added to request, not content)
             var request = new HttpRequestMessage(HttpMethod.Patch, patchUrl)
@@ -2855,33 +2100,29 @@ public class D365BCAdminService : IDisposable
             }
 
             var response = await staticHttpClient.SendAsync(request);
-            Console.WriteLine($"🔍 [DEBUG] PATCH Response status: {response.StatusCode}");
-            Console.WriteLine($"🔍 [DEBUG] PATCH Response headers: {string.Join(", ", response.Headers.Select(h => $"{h.Key}={string.Join(",", h.Value)}"))}");
-            Console.WriteLine($"🔍 [DEBUG] PATCH Content headers: {string.Join(", ", response.Content.Headers.Select(h => $"{h.Key}={string.Join(",", h.Value)}"))}");
+            Log.Debug($"PATCH Response status: {response.StatusCode}");
             
             if (response.IsSuccessStatusCode)
             {
                 var responseContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"✅ [DEBUG] Extension content uploaded successfully");
-                Console.WriteLine($"🔍 [DEBUG] Response content length: {responseContent.Length}");
+                Log.Debug($"Extension content uploaded successfully");
+                Log.Debug($"Response content length: {responseContent.Length}");
                 if (!string.IsNullOrEmpty(responseContent))
                 {
-                    Console.WriteLine($"🔍 [DEBUG] Response content: {responseContent}");
                 }
                 return true;
             }
             else
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"❌ [DEBUG] HTTP {response.StatusCode} Error response: {errorContent}");
-                Console.WriteLine($"❌ [DEBUG] Response reason phrase: {response.ReasonPhrase}");
+                Log.Error($"HTTP {response.StatusCode} Error response: {errorContent}");
+                Log.Error($"Response reason phrase: {response.ReasonPhrase}");
                 return false;
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ [DEBUG] Exception in uploadExtensionContent: {ex.Message}");
-            Console.WriteLine($"❌ [DEBUG] Full exception: {ex}");
+            Log.Error($"Exception in uploadExtensionContent: {ex.Message}");
         }
 
         return false;
@@ -2896,46 +2137,44 @@ public class D365BCAdminService : IDisposable
         
         var url = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload({extensionUploadId})";
         
-        Console.WriteLine($"🔍 [DEBUG] getExtensionUpload called - URL: {url}");
+        Log.Debug($"getExtensionUpload called - URL: {url}");
         
         try
         {
             var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
             var response = await staticHttpClient.SendAsync(httpRequest);
-            Console.WriteLine($"🔍 [DEBUG] Response status: {response.StatusCode}");
+            Log.Debug($"Response status: {response.StatusCode}");
             
             if (response.IsSuccessStatusCode)
             {
                 var jsonContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"🔍 [DEBUG] Raw JSON response: {jsonContent}");
                 
                 var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                 var uploadResponse = JsonSerializer.Deserialize<ExtensionUploadResponse>(jsonContent, options);
                 if (uploadResponse != null)
                 {
-                    Console.WriteLine($"✅ [DEBUG] Extension upload retrieved successfully");
-                    Console.WriteLine($"🔍 [DEBUG] Extension Upload ID: {uploadResponse.SystemId}");
-                    Console.WriteLine($"🔍 [DEBUG] Schedule: {uploadResponse.Schedule}");
-                    Console.WriteLine($"🔍 [DEBUG] Schema Sync Mode: {uploadResponse.SchemaSyncMode}");
-                    Console.WriteLine($"🔍 [DEBUG] Extension Content: {uploadResponse.ExtensionContent ?? "NULL"}");
+                    Log.Debug($"Extension upload retrieved successfully");
+                    Log.Debug($"Extension Upload ID: {uploadResponse.SystemId}");
+                    Log.Debug($"Schedule: {uploadResponse.Schedule}");
+                    Log.Debug($"Schema Sync Mode: {uploadResponse.SchemaSyncMode}");
                         // Try to retrieve the media content from the media link
                         var mediaReadLink = jsonContent.Contains("extensionContent@odata.mediaReadLink") ? "Found" : "Not found";
-                        Console.WriteLine($"🔍 [DEBUG] OData media read link status: {mediaReadLink}");
+                        Log.Debug($"OData media read link status: {mediaReadLink}");
                     
                         // Extract and try to read the actual content from the media link
                         try
                         {
                             var contentUrl = $"https://api.businesscentral.dynamics.com/v2.0/{url.Split('/')[5]}/api/microsoft/automation/v2.0/companies({url.Split("companies(")[1].Split(")")[0]})/extensionUpload({extensionUploadId})/extensionContent";
                             var contentResponse = await staticHttpClient.GetAsync(contentUrl);
-                                Console.WriteLine($"🔍 [DEBUG] Attempting to retrieve content from: {contentUrl}");
+                                Log.Debug($"Attempting to retrieve content from: {contentUrl}");
                             if (contentResponse.IsSuccessStatusCode)
                             {
                                 var contentBytes = await contentResponse.Content.ReadAsByteArrayAsync();
-                                Console.WriteLine($"✅ [DEBUG] Successfully retrieved extension content: {contentBytes.Length} bytes");
+                                Log.Debug($"Successfully retrieved extension content: {contentBytes.Length} bytes");
                             }
                             else
                             {
-                                Console.WriteLine($"🔍 [DEBUG] Could not retrieve content: HTTP {contentResponse.StatusCode}");
+                                Log.Debug($"Could not retrieve content: HTTP {contentResponse.StatusCode}");
                             
                                     // Try to extract the actual media link from the JSON response
                                     try
@@ -2944,26 +2183,26 @@ public class D365BCAdminService : IDisposable
                                         if (jsonDoc.RootElement.TryGetProperty("extensionContent@odata.mediaReadLink", out var mediaLinkElement))
                                         {
                                             var actualMediaLink = mediaLinkElement.GetString();
-                                            Console.WriteLine($"🔍 [DEBUG] Found media read link in JSON: {actualMediaLink}");
+                                            Log.Debug($"Found media read link in JSON: {actualMediaLink}");
                                     
                                             var actualResponse = await staticHttpClient.GetAsync(actualMediaLink);
-                                            Console.WriteLine($"🔍 [DEBUG] Response from actual media link: HTTP {actualResponse.StatusCode}");
+                                            Log.Debug($"Response from actual media link: HTTP {actualResponse.StatusCode}");
                                             if (actualResponse.IsSuccessStatusCode)
                                             {
                                                 var contentBytes2 = await actualResponse.Content.ReadAsByteArrayAsync();
-                                                Console.WriteLine($"✅ [DEBUG] Successfully retrieved extension content from media link: {contentBytes2.Length} bytes");
+                                                Log.Debug($"Successfully retrieved extension content from media link: {contentBytes2.Length} bytes");
                                             }
                                         }
                                     }
                                     catch (Exception parseEx)
                                     {
-                                        Console.WriteLine($"🔍 [DEBUG] Exception parsing media link: {parseEx.Message}");
+                                        Log.Debug($"Exception parsing media link: {parseEx.Message}");
                                     }
                             }
                         }
                         catch (Exception ex)
                         {
-                            Console.WriteLine($"🔍 [DEBUG] Exception retrieving content: {ex.Message}");
+                            Log.Debug($"Exception retrieving content: {ex.Message}");
                         }
                     
                         return uploadResponse;
@@ -2972,13 +2211,12 @@ public class D365BCAdminService : IDisposable
             else
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"❌ [DEBUG] HTTP {response.StatusCode} Error response: {errorContent}");
+                Log.Error($"HTTP {response.StatusCode} Error response: {errorContent}");
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ [DEBUG] Exception in getExtensionUpload: {ex.Message}");
-            Console.WriteLine($"❌ [DEBUG] Full exception: {ex}");
+            Log.Error($"Exception in getExtensionUpload: {ex.Message}");
         }
 
         return null;
@@ -2987,7 +2225,7 @@ public class D365BCAdminService : IDisposable
 
     public async Task<bool> waitForDeploymentCompletion(Guid tenantId, string environmentName, Guid companyId, string appName, int maxWaitSeconds = 300, int pollIntervalMs = 5000)
     {
-        Console.WriteLine($"⏳ [DEBUG] Waiting for all deployments to complete (max {maxWaitSeconds}s, polling every {pollIntervalMs}ms)...");
+        Log.Debug($"Waiting for all deployments to complete (max {maxWaitSeconds}s, polling every {pollIntervalMs}ms)...");
         
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var maxWaitMs = maxWaitSeconds * 1000;
@@ -2996,7 +2234,7 @@ public class D365BCAdminService : IDisposable
         {
             try
             {
-                var deploymentStatuses = await getExtensionDeploymentStatus(tenantId, environmentName, companyId);
+                var deploymentStatuses = (await getExtensionDeploymentStatus(tenantId, environmentName, companyId)).Value;
                 
                 if (deploymentStatuses != null && deploymentStatuses.Count > 0)
                 {
@@ -3007,19 +2245,19 @@ public class D365BCAdminService : IDisposable
                     if (inProgressDeployments.Count == 0)
                     {
                         // No InProgress deployments - we can proceed with next app
-                        Console.WriteLine($"✅ [DEBUG] No 'InProgress' deployments found. Ready for next app!");
+                        Log.Debug($"No 'InProgress' deployments found. Ready for next app!");
                         foreach (var status in deploymentStatuses)
                         {
-                            Console.WriteLine($"   - {status.Name} ({status.Publisher}): {status.Status}");
+                            Log.Debug($"   - {status.Name} ({status.Publisher}): {status.Status}");
                         }
                         return true;
                     }
                     
                     // Log current in-progress deployments
-                    Console.WriteLine($"🔄 [DEBUG] Still have InProgress deployments (elapsed: {stopwatch.ElapsedMilliseconds}ms):");
+                    Log.Debug($"Still have InProgress deployments (elapsed: {stopwatch.ElapsedMilliseconds}ms):");
                     foreach (var status in inProgressDeployments)
                     {
-                        Console.WriteLine($"   - {status.Name} ({status.Publisher}): {status.Status}");
+                        Log.Debug($"   - {status.Name} ({status.Publisher}): {status.Status}");
                     }
                     
                     // Also show completed ones for context
@@ -3027,28 +2265,28 @@ public class D365BCAdminService : IDisposable
                         ds.Status != null && !ds.Status.Equals("InProgress", StringComparison.OrdinalIgnoreCase)).ToList();
                     if (completedDeployments.Count > 0)
                     {
-                        Console.WriteLine($"   Completed:");
+                        Log.Debug($"   Completed:");
                         foreach (var status in completedDeployments)
                         {
-                            Console.WriteLine($"   - {status.Name} ({status.Publisher}): {status.Status}");
+                            Log.Debug($"   - {status.Name} ({status.Publisher}): {status.Status}");
                         }
                     }
                 }
                 else
                 {
-                    Console.WriteLine($"ℹ️ [DEBUG] No deployment statuses found yet, waiting...");
+                    Log.Debug($"No deployment statuses found yet, waiting...");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"⚠️ [DEBUG] Error checking deployment status: {ex.Message}");
+                Log.Warn($"Error checking deployment status: {ex.Message}");
             }
             
             // Wait before next poll
             await Task.Delay(pollIntervalMs);
         }
         
-        Console.WriteLine($"⏱️ [DEBUG] Deployment polling timeout after {maxWaitSeconds} seconds");
+        Log.Debug($"Deployment polling timeout after {maxWaitSeconds} seconds");
         return false;
     }
 
@@ -3060,18 +2298,18 @@ public class D365BCAdminService : IDisposable
     {
         await EnsureAuthenticated(tenantId);
         
-        Console.WriteLine($"🔍 [DEBUG] triggerExtensionDeployment called - Extension ID: {extensionUploadId}, Schedule: {schedule}");
+        Log.Debug($"triggerExtensionDeployment called - Extension ID: {extensionUploadId}, Schedule: {schedule}");
         
         try
         {
             // First, GET the record to get its etag
             var getUrl = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload({extensionUploadId})";
-            Console.WriteLine($"🔍 [DEBUG] Getting extension upload record for etag...");
+            Log.Debug($"Getting extension upload record for etag...");
             
             var getResponse = await staticHttpClient.GetAsync(getUrl);
             if (!getResponse.IsSuccessStatusCode)
             {
-                Console.WriteLine($"❌ [DEBUG] Failed to GET extension record: HTTP {getResponse.StatusCode}");
+                Log.Error($"Failed to GET extension record: HTTP {getResponse.StatusCode}");
                 return false;
             }
             
@@ -3085,11 +2323,10 @@ public class D365BCAdminService : IDisposable
             if (string.IsNullOrEmpty(etag))
             {
                 etag = "*"; // Fallback to wildcard
-                Console.WriteLine($"⚠️ [DEBUG] No etag found, using wildcard");
+                Log.Warn($"No etag found, using wildcard");
             }
             else
             {
-                Console.WriteLine($"🔍 [DEBUG] Retrieved etag: {etag}");
             }
             
             // PATCH the extension upload record to update schedule (which triggers deployment)
@@ -3103,31 +2340,30 @@ public class D365BCAdminService : IDisposable
             };
             patchRequest.Headers.Add("If-Match", etag);
             
-            Console.WriteLine($"🔍 [DEBUG] Sending PATCH to update schedule and trigger deployment...");
+            Log.Debug($"Sending PATCH to update schedule and trigger deployment...");
             var patchResponse = await staticHttpClient.SendAsync(patchRequest);
-            Console.WriteLine($"🔍 [DEBUG] PATCH response status: {patchResponse.StatusCode}");
+            Log.Debug($"PATCH response status: {patchResponse.StatusCode}");
             
             if (patchResponse.IsSuccessStatusCode)
             {
                 var responseContent = await patchResponse.Content.ReadAsStringAsync();
-                Console.WriteLine($"✅ [DEBUG] Extension deployment triggered successfully");
+                Log.Debug($"Extension deployment triggered successfully");
                 if (!string.IsNullOrEmpty(responseContent))
                 {
-                    Console.WriteLine($"🔍 [DEBUG] Response: {responseContent}");
                 }
                 return true;
             }
             else
             {
                 var errorContent = await patchResponse.Content.ReadAsStringAsync();
-                Console.WriteLine($"❌ [DEBUG] PATCH failed: HTTP {patchResponse.StatusCode}");
-                Console.WriteLine($"�� [DEBUG] Error: {errorContent}");
+                Log.Error($"PATCH failed: HTTP {patchResponse.StatusCode}");
+                Log.Debug($"Error: {errorContent}");
                 return false;
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ [DEBUG] Exception in triggerExtensionDeployment: {ex.Message}");
+            Log.Error($"Exception in triggerExtensionDeployment: {ex.Message}");
             return false;
         }
     }
@@ -3140,14 +2376,14 @@ public class D365BCAdminService : IDisposable
     {
         await EnsureAuthenticated(tenantId);
 
-        Console.WriteLine($"🔍 [DEBUG] invokeExtensionUploadAction called - Extension ID: {extensionUploadId}");
+        Log.Debug($"invokeExtensionUploadAction called - Extension ID: {extensionUploadId}");
 
         try
         {
             // Call the bound action Microsoft.NAV.upload to trigger the actual installation
             var actionUrl = $"https://api.businesscentral.dynamics.com/v2.0/{environmentName}/api/microsoft/automation/v2.0/companies({companyId})/extensionUpload({extensionUploadId})/Microsoft.NAV.upload";
             
-            Console.WriteLine($"🔍 [DEBUG] Calling Microsoft.NAV.upload bound action at: {actionUrl}");
+            Log.Debug($"Calling Microsoft.NAV.upload bound action at: {actionUrl}");
             
             // POST with no body (or empty body) to the action
             var request = new HttpRequestMessage(HttpMethod.Post, actionUrl);
@@ -3158,39 +2394,35 @@ public class D365BCAdminService : IDisposable
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
             }
             
-            Console.WriteLine($"🔍 [DEBUG] Sending POST request to invoke upload action...");
+            Log.Debug($"Sending POST request to invoke upload action...");
             var response = await staticHttpClient.SendAsync(request);
             
-            Console.WriteLine($"🔍 [DEBUG] Microsoft.NAV.upload response status: {response.StatusCode}");
-            Console.WriteLine($"🔍 [DEBUG] Response headers: {string.Join(", ", response.Headers.Select(h => $"{h.Key}={string.Join("|", h.Value)}"))}");
+            Log.Debug($"Microsoft.NAV.upload response status: {response.StatusCode}");
 
             if (response.IsSuccessStatusCode)
             {
                 var responseContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"✅ [DEBUG] Extension upload action invoked successfully");
+                Log.Debug($"Extension upload action invoked successfully");
                 if (!string.IsNullOrEmpty(responseContent))
                 {
-                    Console.WriteLine($"🔍 [DEBUG] Response content: {responseContent}");
                 }
                 else
                 {
-                    Console.WriteLine($"🔍 [DEBUG] Response has no content (expected for action invocation)");
+                    Log.Debug($"Response has no content (expected for action invocation)");
                 }
                 return true;
             }
             else
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"❌ [DEBUG] Microsoft.NAV.upload failed: HTTP {response.StatusCode} {response.ReasonPhrase}");
-                Console.WriteLine($"❌ [DEBUG] Error response: {errorContent}");
-                Console.WriteLine($"❌ [DEBUG] Response headers: {string.Join(", ", response.Headers.Select(h => $"{h.Key}={string.Join("|", h.Value)}"))}");
+                Log.Error($"Microsoft.NAV.upload failed: HTTP {response.StatusCode} {response.ReasonPhrase}");
+                Log.Error($"Error response: {errorContent}");
                 return false;
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ [DEBUG] Exception in invokeExtensionUploadAction: {ex.Message}");
-            Console.WriteLine($"❌ [DEBUG] Full exception: {ex}");
+            Log.Error($"Exception in invokeExtensionUploadAction: {ex.Message}");
             return false;
         }
     }
@@ -3201,41 +2433,41 @@ public class D365BCAdminService : IDisposable
     /// </summary>
     public async Task<PteUploadResult> createPteUpload(Guid tenantId, string environmentName, Guid companyId, string appFilePath, string schedule = "Current version", string schemaSyncMode = "Add")
     {
-        Console.WriteLine($"🔍 [DEBUG] createPteUpload called - Environment: {environmentName}, Company: {companyId}, File: {appFilePath}");
+        Log.Debug($"createPteUpload called - Environment: {environmentName}, Company: {companyId}, File: {appFilePath}");
         
         try
         {
             // Extract app name from file (without extension)
             var appName = Path.GetFileNameWithoutExtension(appFilePath);
-            Console.WriteLine($"🔍 [DEBUG] App name extracted from file: {appName}");
+            Log.Debug($"App name extracted from file: {appName}");
             
             // Step 1: Create the extension upload task
-            Console.WriteLine($"🔍 [DEBUG] Step 1: Creating extension upload task");
+            Log.Debug($"Step 1: Creating extension upload task");
             var uploadResponse = await createExtensionUpload(tenantId, environmentName, companyId, schedule, schemaSyncMode);
             
             if (uploadResponse == null)
             {
-                Console.WriteLine($"❌ [DEBUG] Failed to create extension upload task");
+                Log.Error($"Failed to create extension upload task");
                 return new PteUploadResult { Success = false, Error = "Failed to create extension upload task", AppName = appName };
             }
             
             var extensionUploadId = uploadResponse.SystemId;
             if (string.IsNullOrEmpty(extensionUploadId))
             {
-                Console.WriteLine($"❌ [DEBUG] Extension upload ID is null or empty");
+                Log.Error($"Extension upload ID is null or empty");
                 return new PteUploadResult { Success = false, Error = "Extension upload ID is null or empty", AppName = appName };
             }
             
-            Console.WriteLine($"✅ [DEBUG] Extension upload task created successfully with ID: {extensionUploadId}");
+            Log.Debug($"Extension upload task created successfully with ID: {extensionUploadId}");
             
             // Step 2: Upload the extension content
-            Console.WriteLine($"🔍 [DEBUG] Step 2: Uploading extension content from file: {appFilePath}");
-            Console.WriteLine($"🔍 [DEBUG] Using extensionUploadId: {extensionUploadId} for PATCH request");
+            Log.Debug($"Step 2: Uploading extension content from file: {appFilePath}");
+            Log.Debug($"Using extensionUploadId: {extensionUploadId} for PATCH request");
             var uploadSuccess = await uploadExtensionContent(tenantId, environmentName, companyId, extensionUploadId, appFilePath);
             
             if (!uploadSuccess)
             {
-                Console.WriteLine($"❌ [DEBUG] Failed to upload extension content");
+                Log.Error($"Failed to upload extension content");
                 return new PteUploadResult { 
                     Success = false, 
                     Error = "Failed to upload extension content",
@@ -3244,15 +2476,15 @@ public class D365BCAdminService : IDisposable
                 };
             }
             
-            Console.WriteLine($"✅ [DEBUG] Extension content uploaded successfully");
+            Log.Debug($"Extension content uploaded successfully");
 
             // Step 3: Invoke the Microsoft.NAV.upload bound action to actually install the extension
-            Console.WriteLine($"🔍 [DEBUG] Step 3: Invoking Microsoft.NAV.upload action to install the extension");
+            Log.Debug($"Step 3: Invoking Microsoft.NAV.upload action to install the extension");
             var uploadActionSuccess = await invokeExtensionUploadAction(tenantId, environmentName, companyId, extensionUploadId);
             
             if (!uploadActionSuccess)
             {
-                Console.WriteLine($"⚠️ [DEBUG] Upload action invocation failed");
+                Log.Warn($"Upload action invocation failed");
                 return new PteUploadResult {
                     Success = false,
                     Error = "Failed to invoke Microsoft.NAV.upload action",
@@ -3261,7 +2493,7 @@ public class D365BCAdminService : IDisposable
                 };
             }
 
-            Console.WriteLine($"✅ [DEBUG] PTE upload completed successfully");
+            Log.Debug($"PTE upload completed successfully");
             return new PteUploadResult { 
                 Success = true,
                 ExtensionUploadId = extensionUploadId,
@@ -3272,8 +2504,7 @@ public class D365BCAdminService : IDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ [DEBUG] Exception in createPteUpload: {ex.Message}");
-            Console.WriteLine($"❌ [DEBUG] Full exception: {ex}");
+            Log.Error($"Exception in createPteUpload: {ex.Message}");
             return new PteUploadResult { Success = false, Error = $"Exception: {ex.Message}", AppName = Path.GetFileNameWithoutExtension(appFilePath) };
         }
     }
