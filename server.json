@@ -8,13 +8,13 @@
     "url": "https://github.com/demiliani/D365BCAdminMCP",
     "source": "github"
   },
-  "version": "2.0.0",
+  "version": "2.0.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@demiliani/d365bc-admin-mcp",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
