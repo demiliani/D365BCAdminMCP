@@ -38,6 +38,18 @@ public partial class D365BCAdminService : IDisposable
         public bool IsExpired => DateTimeOffset.UtcNow >= ExpiresOn.AddMinutes(-5); // Refresh 5 minutes before expiry
     }
 
+    private static void CacheToken(Guid tenantId, string token, DateTimeOffset expiresOn)
+    {
+        lock (_tokenCacheLock)
+        {
+            _tokenCache[tenantId] = new CachedToken
+            {
+                Token = token,
+                ExpiresOn = expiresOn
+            };
+        }
+    }
+
     public D365BCAdminService()
     {
         // Don't create HttpClient per instance - use static shared client
@@ -136,13 +148,38 @@ public partial class D365BCAdminService : IDisposable
             }
         }
 
-        lock (_tokenCacheLock)
-        {
-            _tokenCache[cacheKey] = new CachedToken { Token = tokenResult.Token, ExpiresOn = tokenResult.ExpiresOn };
-        }
+        CacheToken(cacheKey, tokenResult.Token, tokenResult.ExpiresOn);
 
         Log.Info($"Token acquired for tenant {cacheKey}, expires: {tokenResult.ExpiresOn}");
         return tokenResult.Token;
+    }
+
+    // Skips Azure CLI / managed identity and the saved sign-in, so the user can pick a different account for the tenant.
+    [McpServerTool(Destructive = false, Idempotent = false), Description("Forces an interactive browser login for the specified tenant, ignoring Azure CLI / managed identity credentials and any saved sign-in. Use it when the automatic login fails, never shows a browser window, or signs in with the wrong account. Returns the authentication status and expiry, not the token.")]
+    public static async Task<string> force_interactive_auth(
+        [Description("The tenant ID (GUID) that requires a fresh interactive login")] Guid tenantId,
+        CancellationToken cancellationToken = default)
+    {
+        Log.Info($"Forcing interactive sign-in for tenant {tenantId}");
+        var tokenRequestContext = new TokenRequestContext(new[] { "https://api.businesscentral.dynamics.com/.default" });
+
+        try
+        {
+            var (credential, tokenResult) = await InteractiveSignInAsync(tenantId, tokenRequestContext, forcePrompt: true, cancellationToken);
+            lock (_tokenCacheLock)
+            {
+                _credentials[tenantId] = credential;
+            }
+            CacheToken(tenantId, tokenResult.Token, tokenResult.ExpiresOn);
+
+            Log.Info($"Interactive token acquired for tenant {tenantId}, expires: {tokenResult.ExpiresOn}");
+            return JsonSerializer.Serialize(new { success = true, tenantId, authenticated = true, expiresOn = tokenResult.ExpiresOn });
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Log.Error($"force_interactive_auth failed for tenant {tenantId}: {ex.Message}");
+            return JsonSerializer.Serialize(new { success = false, tenantId, error = $"Interactive sign-in failed: {ex.Message}" });
+        }
     }
 
     private static async Task<(TokenCredential Credential, AccessToken Token)> SignInAsync(Guid? tenantId, TokenRequestContext context, CancellationToken cancellationToken)
@@ -162,11 +199,17 @@ public partial class D365BCAdminService : IDisposable
             Log.Warn($"DefaultAzureCredential failed ({ex.Message}); falling back to interactive browser authentication");
         }
 
+        return await InteractiveSignInAsync(tenantId, context, forcePrompt: false, cancellationToken);
+    }
+
+    // forcePrompt ignores the saved authentication record so the browser always opens and a new account can be chosen.
+    private static async Task<(TokenCredential Credential, AccessToken Token)> InteractiveSignInAsync(Guid? tenantId, TokenRequestContext context, bool forcePrompt, CancellationToken cancellationToken)
+    {
         if (PersistentTokenCacheEnabled)
         {
             try
             {
-                return await PersistentInteractiveSignInAsync(tenantId, context, cancellationToken);
+                return await PersistentInteractiveSignInAsync(tenantId, context, forcePrompt, cancellationToken);
             }
             catch (Exception ex) when (IsPersistenceFailure(ex))
             {
@@ -180,14 +223,14 @@ public partial class D365BCAdminService : IDisposable
 
     // The encrypted MSAL cache keeps refresh tokens across restarts; the authentication record (account and tenant, no secrets)
     // tells the credential which cached account to use, so no browser window opens while the refresh token is valid.
-    private static async Task<(TokenCredential Credential, AccessToken Token)> PersistentInteractiveSignInAsync(Guid? tenantId, TokenRequestContext context, CancellationToken cancellationToken)
+    private static async Task<(TokenCredential Credential, AccessToken Token)> PersistentInteractiveSignInAsync(Guid? tenantId, TokenRequestContext context, bool forcePrompt, CancellationToken cancellationToken)
     {
         var options = InteractiveOptions(tenantId);
         options.TokenCachePersistenceOptions = new TokenCachePersistenceOptions { Name = TokenCacheName };
 
         var recordPath = AuthenticationRecordPath(tenantId ?? Guid.Empty);
         AuthenticationRecord? record = null;
-        if (File.Exists(recordPath))
+        if (!forcePrompt && File.Exists(recordPath))
         {
             try
             {
