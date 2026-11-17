@@ -942,16 +942,10 @@ public class ExtensionUploadResponse
     public string? Status { get; set; }
 }
 
-[JsonSerializable(typeof(ExtensionUploadRequest))]
-internal sealed partial class ExtensionUploadRequestContext : JsonSerializerContext
+public class ExtensionUploadListResponse
 {
-
-}
-
-[JsonSerializable(typeof(ExtensionUploadResponse))]
-internal sealed partial class ExtensionUploadResponseContext : JsonSerializerContext
-{
-
+    [JsonPropertyName("value")]
+    public List<ExtensionUploadResponse>? Value { get; set; }
 }
 
 /// <summary>

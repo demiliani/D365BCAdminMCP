@@ -78,7 +78,7 @@ public static class AppPackageBuilder
     }
 }
 
-public record RecordedRequest(HttpMethod Method, Uri Uri, string? Authorization, string? Body, string? ContentType);
+public record RecordedRequest(HttpMethod Method, Uri Uri, string? Authorization, string? Body, string? ContentType, string? IfMatch = null);
 
 public sealed class FakeAdminApi : HttpMessageHandler
 {
@@ -112,7 +112,8 @@ public sealed class FakeAdminApi : HttpMessageHandler
             request.RequestUri!,
             request.Headers.Authorization?.ToString(),
             request.Content == null ? null : await request.Content.ReadAsStringAsync(cancellationToken),
-            request.Content?.Headers.ContentType?.MediaType);
+            request.Content?.Headers.ContentType?.MediaType,
+            request.Headers.TryGetValues("If-Match", out var ifMatch) ? string.Join(",", ifMatch) : null);
         Requests.Add(recorded);
 
         var path = request.RequestUri!.AbsolutePath;
