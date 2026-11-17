@@ -8,13 +8,13 @@
     "url": "https://github.com/demiliani/D365BCAdminMCP",
     "source": "github"
   },
-  "version": "1.3.0",
+  "version": "2.0.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@demiliani/d365bc-admin-mcp",
-      "version": "1.3.0",
+      "version": "2.0.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
@@ -23,7 +23,13 @@
         {
           "name": "D365BC_MCP_LOG_LEVEL",
           "description": "Log level written to stderr",
-          "choices": ["Debug", "Information", "Warning", "Error", "None"],
+          "choices": [
+            "Debug",
+            "Information",
+            "Warning",
+            "Error",
+            "None"
+          ],
           "default": "Information"
         },
         {
