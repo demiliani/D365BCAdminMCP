@@ -123,6 +123,9 @@ Once configured, use natural language commands in your AI assistant:
 "Rename the 'Testing' sandbox to 'UAT'"
 "Which points in time can I restore Production to? Restore it to yesterday 08:00 UTC as a sandbox called 'Prod-Restore'"
 "Show the running environment operations and how many environments I can still create"
+"Delete the Production environment"   (you are asked to type 'Production' to confirm)
+"Export the Production database to my storage account; how many exports are left this month?"
+"Restrict Sandbox access to the 'BC Testers' security group"
 ```
 
 ### Application Management
@@ -160,9 +163,9 @@ Once configured, use natural language commands in your AI assistant:
 "Check the extension deployment status for Fabrikam in Production"
 ```
 
-## 🛠️ Available Tools (44 Total)
+## 🛠️ Available Tools (51 Total)
 
-The MCP server exposes 44 administrative tools organized by category:
+The MCP server exposes 51 administrative tools organized by category:
 
 ### 🔑 Authentication & Tenant Management (2 tools)
 
@@ -225,6 +228,25 @@ The MCP server exposes 44 administrative tools organized by category:
 | `create_environment_notification_recipient` | Add a new notification recipient |
 | `delete_environment_notification_recipient` | Remove a notification recipient |
 
+### 🔐 Environment Access (5 tools)
+
+| Tool | Description |
+|------|-------------|
+| `get_environment_security_group` | Get the Microsoft Entra security group that restricts access to an environment |
+| `set_environment_security_group` | Restrict access to the members of a security group |
+| `clear_environment_security_group` | Remove the security group restriction |
+| `get_access_with_m365_licenses` | Check whether users can access the environment with Microsoft 365 licenses |
+| `set_access_with_m365_licenses` | Allow or disallow access with Microsoft 365 licenses |
+
+### 💾 Database Export (2 tools)
+
+| Tool | Description |
+|------|-------------|
+| `get_database_export_metrics` | Exports allowed per month and remaining this month |
+| `start_database_export` | Export the environment database as a .bacpac file to an Azure Storage account |
+
+`start_database_export` needs a paid subscription, the D365 BACKUP/RESTORE permission set and a Blob service SAS URI of an Azure **standard** storage account with Read, Write, Create and Delete permissions. The SAS URI is never logged or returned by the server, but it is part of the conversation with the AI assistant, so use a short-lived one. Track the export with `get_environment_operations`.
+
 ### 🔧 Feature Management (3 tools)
 
 | Tool | Description |
@@ -270,7 +292,8 @@ Uploading PTEs through the Automation API is being removed in 2027 release wave 
 
 ### Tool behaviour
 
-- **Annotations:** every tool declares MCP hints, so clients can run read-only tools (`get_*`) without confirmation. Tools that delete or break things (`delete_environment`, `rename_environment`, `uninstall_app`, `kill_active_sessions`, `delete_environment_notification_recipient`, `cancel_scheduled_pte`) are marked destructive.
+- **Annotations:** every tool declares MCP hints, so clients can run read-only tools (`get_*`) without confirmation. Tools that delete or break things (`delete_environment`, `rename_environment`, `uninstall_app`, `kill_active_sessions`, `delete_environment_notification_recipient`, `cancel_scheduled_pte`) are marked destructive, as are `set_environment_security_group` and `clear_environment_security_group`.
+- **Confirmation for production:** deleting or renaming a **Production** environment, and uninstalling an app with `deleteData` in production, require the user to type the environment name. Clients that support MCP elicitation (confirmation prompts) show a prompt and a name supplied by the model is ignored; with other clients the assistant must ask the user and pass `confirmEnvironmentName`. Sandboxes are not affected.
 - **Throttling and transient errors:** calls answered with 429 or 503 are retried up to 3 times, honouring `Retry-After` (max 60 s). Read calls are also retried on 502, 504, network errors and timeouts; write calls are not, to avoid running an operation twice. Each HTTP request times out after 5 minutes.
 - **Cancellation and progress:** cancelling a request in the client stops the tool, including the waits of `install_pte` and `install_ptes_from_folder`, which also report progress. An operation already accepted by Business Central keeps running server-side; check it with `get_app_operations` or `get_environment_operations`.
 

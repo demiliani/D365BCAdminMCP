@@ -30,6 +30,47 @@ public class AuthenticationTests : HttpTestBase
     }
 
     [Fact]
+    public async Task GetTenantIdFromTenantName_ReadsThePublicOpenIdConfigurationWithoutTheToken()
+    {
+        var tenantId = Guid.NewGuid();
+        Api.On(HttpMethod.Get, "^/contoso.onmicrosoft.com/.well-known/openid-configuration$", HttpStatusCode.OK,
+            new { token_endpoint = $"https://login.microsoftonline.com/{tenantId}/oauth2/token" });
+
+        var json = Parse(await D365BCAdminService.get_tenant_id_from_tenant_name(" contoso.onmicrosoft.com "));
+
+        Assert.True(json.GetProperty("success").GetBoolean());
+        Assert.Equal(tenantId, json.GetProperty("tenantId").GetGuid());
+        var request = Assert.Single(Api.Requests);
+        Assert.Equal("login.microsoftonline.com", request.Uri.Host);
+        Assert.Null(request.Authorization);
+    }
+
+    [Theory]
+    [InlineData("contoso.com/../common")]
+    [InlineData("contoso com")]
+    [InlineData("")]
+    public async Task GetTenantIdFromTenantName_RejectsInvalidNamesWithoutCallingEntra(string tenantName)
+    {
+        var json = Parse(await D365BCAdminService.get_tenant_id_from_tenant_name(tenantName));
+
+        Assert.False(json.GetProperty("success").GetBoolean());
+        Assert.Contains("not a valid tenant name", json.GetProperty("error").GetString());
+        Assert.Empty(Api.Requests);
+    }
+
+    [Fact]
+    public async Task GetTenantIdFromTenantName_ReportsUnknownTenants()
+    {
+        Api.On(HttpMethod.Get, "/.well-known/openid-configuration$", HttpStatusCode.BadRequest,
+            new { error = "invalid_tenant", error_description = "Tenant 'nowhere.example' not found." });
+
+        var json = Parse(await D365BCAdminService.get_tenant_id_from_tenant_name("nowhere.example"));
+
+        Assert.False(json.GetProperty("success").GetBoolean());
+        Assert.Contains("HTTP 400", json.GetProperty("error").GetString());
+    }
+
+    [Fact]
     public async Task ClearCachedToken_ForgetsTheTokenAndThePersistedAccount()
     {
         using var folder = new TempFolder();

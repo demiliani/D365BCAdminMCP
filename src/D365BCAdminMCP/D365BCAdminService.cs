@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using System.ComponentModel;
 using ModelContextProtocol.Server;
 using Azure.Core;
@@ -239,10 +240,10 @@ public partial class D365BCAdminService : IDisposable
     private const string TokenCacheName = "D365BCAdminMCP";
 
     private static bool PersistentTokenCacheEnabled =>
-        !string.Equals(System.Environment.GetEnvironmentVariable(PersistentTokenCacheEnvironmentVariable)?.Trim(), "false", StringComparison.OrdinalIgnoreCase);
+        !string.Equals(Environment.GetEnvironmentVariable(PersistentTokenCacheEnvironmentVariable)?.Trim(), "false", StringComparison.OrdinalIgnoreCase);
 
     internal static string AuthenticationRecordDirectory { get; set; } =
-        Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), TokenCacheName);
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), TokenCacheName);
 
     internal static string AuthenticationRecordPath(Guid tenantId) => Path.Combine(AuthenticationRecordDirectory, $"auth-record-{tenantId}.json");
 
@@ -294,26 +295,18 @@ public partial class D365BCAdminService : IDisposable
 
     [McpServerTool(ReadOnly = true, Idempotent = true), Description("Retrieves the tenant ID (GUID) for a given tenant name by querying the Azure AD well-known configuration endpoint.")]
     public static async Task<string> get_tenant_id_from_tenant_name(
-        [Description("The tenant name (e.g. 'contoso.onmicrosoft.com')")] string tenantName)
+        [Description("The tenant name (e.g. 'contoso.onmicrosoft.com')")] string tenantName,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            var d365bcAdminService = new D365BCAdminService();
-            var tenantId = await d365bcAdminService.getTenantIDFromTenantName(tenantName);
-            return JsonSerializer.Serialize(new { 
-                success = true, 
-                tenantId = tenantId,
-                tenantName = tenantName
-            });
+            var tenantId = await new D365BCAdminService { CancellationToken = cancellationToken }.getTenantIDFromTenantName(tenantName);
+            return JsonSerializer.Serialize(new { success = true, tenantId, tenantName });
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
         {
             Log.Error($"get_tenant_id_from_tenant_name failed: {ex.Message}");
-            return JsonSerializer.Serialize(new { 
-                success = false, 
-                error = ex.Message,
-                tenantName = tenantName
-            });
+            return JsonSerializer.Serialize(new { success = false, error = ex.Message, tenantName });
         }
     }
 
@@ -363,100 +356,35 @@ public partial class D365BCAdminService : IDisposable
         }
     }
 
-    /// <summary>
-    /// Retrieves the tenant ID (GUID) for a given tenant name by querying the Azure AD well-known configuration endpoint.
-    /// </summary>
-    /// <param name="tenantName">The tenant name (e.g., "3t.bike" or "contoso.onmicrosoft.com")</param>
-    /// <returns>The tenant ID as a GUID</returns>
+    private static readonly Regex TenantNamePattern = new(@"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$");
+
+    // The OpenID discovery document is public; the request is built without the access token on purpose.
     public async Task<Guid> getTenantIDFromTenantName(string tenantName)
     {
-        if (string.IsNullOrWhiteSpace(tenantName))
+        tenantName = tenantName?.Trim() ?? string.Empty;
+        if (!TenantNamePattern.IsMatch(tenantName))
         {
-            throw new ArgumentException("Tenant name cannot be null or empty.", nameof(tenantName));
+            throw new ArgumentException($"'{tenantName}' is not a valid tenant name; use a domain such as 'contoso.onmicrosoft.com'.", nameof(tenantName));
         }
 
-        try
+        var url = $"https://login.microsoftonline.com/{Uri.EscapeDataString(tenantName)}/.well-known/openid-configuration";
+        var result = await SendAsync<OpenIdConfiguration>(() => new HttpRequestMessage(HttpMethod.Get, url));
+        if (!result.Success)
         {
-            Log.Debug($"GetTenantIDFromTenantName called with tenantName: {tenantName}");
-            
-            // Construct the well-known OpenID configuration endpoint
-            var url = $"https://login.microsoftonline.com/{tenantName}/.well-known/openid-configuration";
-            Log.Debug($"Making request to: {url}");
-            
-            var httpRequest = CreateAuthenticatedRequest(HttpMethod.Get, url);
-            
-            var response = await staticHttpClient.SendAsync(httpRequest);
-            Log.Debug($"Response status: {response.StatusCode}");
-
-            if (!response.IsSuccessStatusCode)
-            {
-                var errorContent = await response.Content.ReadAsStringAsync();
-                Log.Error($"Failed to retrieve tenant configuration: {response.StatusCode} - {errorContent}");
-                throw new InvalidOperationException($"Failed to retrieve tenant configuration for '{tenantName}': HTTP {response.StatusCode}");
-            }
-
-            var jsonContent = await response.Content.ReadAsStringAsync();
-            Log.Debug($"Response content length: {jsonContent.Length}");
-            
-            // Parse the JSON response to extract the tenant ID from the token_endpoint
-            var jsonDocument = JsonDocument.Parse(jsonContent);
-            var root = jsonDocument.RootElement;
-
-            if (!root.TryGetProperty("token_endpoint", out var tokenEndpointElement))
-            {
-                Log.Error($"'token_endpoint' property not found in response");
-                throw new InvalidOperationException("'token_endpoint' property not found in OpenID configuration response");
-            }
-
-            var tokenEndpoint = tokenEndpointElement.GetString();
-            if (string.IsNullOrEmpty(tokenEndpoint))
-            {
-                Log.Error($"'token_endpoint' value is null or empty");
-                throw new InvalidOperationException("'token_endpoint' value is empty");
-            }
-
-            Log.Debug($"Token endpoint: {tokenEndpoint}");
-
-            // Extract the tenant ID (GUID) from the token_endpoint URL
-            // Example: https://login.microsoftonline.com/d0de2a8d-d356-4558-99bc-61e6d62a55e8/oauth2/token
-            // We need to extract: d0de2a8d-d356-4558-99bc-61e6d62a55e8
-            
-            var uri = new Uri(tokenEndpoint);
-            var pathSegments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            
-            if (pathSegments.Length == 0)
-            {
-                Log.Error($"Could not extract path segments from token_endpoint");
-                throw new InvalidOperationException("Could not extract tenant ID from token_endpoint URL");
-            }
-
-            var tenantIdString = pathSegments[0];
-            Log.Debug($"Extracted tenant ID string: {tenantIdString}");
-
-            if (!Guid.TryParse(tenantIdString, out var tenantId))
-            {
-                Log.Error($"Failed to parse '{tenantIdString}' as a GUID");
-                throw new InvalidOperationException($"Failed to parse tenant ID '{tenantIdString}' as a valid GUID");
-            }
-
-            Log.Debug($"Successfully retrieved tenant ID: {tenantId}");
-            return tenantId;
+            throw new InvalidOperationException($"Tenant '{tenantName}' could not be resolved: {result.Error}");
         }
-        catch (HttpRequestException ex)
+
+        // token_endpoint has the form https://login.microsoftonline.com/{tenantId}/oauth2/token
+        var tokenEndpoint = result.Value!.TokenEndpoint;
+        var segments = Uri.TryCreate(tokenEndpoint, UriKind.Absolute, out var uri)
+            ? uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries)
+            : Array.Empty<string>();
+        if (segments.Length == 0 || !Guid.TryParse(segments[0], out var tenantId))
         {
-            Log.Error($"HTTP request failed: {ex.Message}");
-            throw new InvalidOperationException($"HTTP request to retrieve tenant configuration failed: {ex.Message}", ex);
+            throw new InvalidOperationException($"Unexpected token endpoint '{tokenEndpoint}' in the OpenID configuration of '{tenantName}'");
         }
-        catch (JsonException ex)
-        {
-            Log.Error($"JSON parsing failed: {ex.Message}");
-            throw new InvalidOperationException($"Failed to parse OpenID configuration response: {ex.Message}", ex);
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"Unexpected error: {ex.Message}");
-            throw new InvalidOperationException($"An unexpected error occurred while retrieving tenant ID: {ex.Message}", ex);
-        }
+
+        return tenantId;
     }
 
     private static readonly JsonSerializerOptions IgnoreNullsOptions = new() { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };

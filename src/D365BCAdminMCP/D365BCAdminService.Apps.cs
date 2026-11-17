@@ -122,7 +122,7 @@ public partial class D365BCAdminService
         return ToJson(result);
     }
 
-    [McpServerTool(Destructive = true), Description("Uninstalls an app from a Business Central environment.")]
+    [McpServerTool(Destructive = true), Description("Uninstalls an app from a Business Central environment. Deleting the app data (deleteData) in a production environment requires the user to confirm by typing the environment name.")]
     public static async Task<string> uninstall_app(
         [Description("The tenant ID (GUID) for which to uninstall the app")] Guid tenantId,
         [Description("The name of the environment")] string environmentName,
@@ -130,9 +130,19 @@ public partial class D365BCAdminService
         [Description("Optional: Whether to use the environment update window")] bool? useEnvironmentUpdateWindow = null,
         [Description("Optional: Whether to uninstall dependent apps")] bool? uninstallDependents = null,
         [Description("Optional: Whether to delete data and sync clean the extension")] bool? deleteData = null,
+        [Description(ConfirmEnvironmentNameDescription)] string? confirmEnvironmentName = null,
+        McpServer? server = null,
         CancellationToken cancellationToken = default)
     {
         var d365bcAdminService = await CreateServiceAsync(tenantId, cancellationToken);
+        if (deleteData == true)
+        {
+            var refusal = await d365bcAdminService.ConfirmProductionActionAsync(environmentName, $"UNINSTALL app {appId} and DELETE ITS DATA from", confirmEnvironmentName, ConfirmationPrompt(server));
+            if (refusal != null)
+            {
+                return refusal;
+            }
+        }
 
         var request = new UninstallAppRequest
         {

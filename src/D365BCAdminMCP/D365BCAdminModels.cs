@@ -765,7 +765,7 @@ public class AppOperationsResponse
     public List<AppOperation>? Value { get; set; }
 }
 
-public partial class Environment
+public class BcEnvironment
 {
     [JsonPropertyName("name")]
     public string? Name { get; set; }
@@ -1196,3 +1196,32 @@ public class ApiResult<T>
         : new ApiResult<TOut> { StatusCode = StatusCode, Error = Error ?? "Empty response from the Business Central API", ErrorBody = ErrorBody };
 }
 
+public class OpenIdConfiguration
+{
+    [JsonPropertyName("token_endpoint")]
+    public string? TokenEndpoint { get; set; }
+}
+
+public class DatabaseExportMetrics
+{
+    [JsonPropertyName("exportsPerMonth")]
+    public int? ExportsPerMonth { get; set; }
+
+    [JsonPropertyName("exportsRemainingThisMonth")]
+    public int? ExportsRemainingThisMonth { get; set; }
+}
+
+public class SecurityGroupAccess
+{
+    [JsonPropertyName("id")]
+    public Guid? Id { get; set; }
+
+    [JsonPropertyName("displayName")]
+    public string? DisplayName { get; set; }
+}
+
+public class AccessWithM365Licenses
+{
+    [JsonPropertyName("enabled")]
+    public bool? Enabled { get; set; }
+}
