@@ -6,8 +6,9 @@ Complete installation instructions for Windows, macOS, and Linux.
 
 Before installing, ensure you have:
 
-- **Node.js 16.0 or higher** - [Download from nodejs.org](https://nodejs.org/)
+- **Node.js 18 or higher** - [Download from nodejs.org](https://nodejs.org/)
 - **npm** (comes with Node.js)
+- **Windows, Linux (glibc) or macOS, on x64 or ARM64** - npm installs a self-contained server for your platform, so no .NET runtime or SDK is needed
 - **Dynamics 365 Business Central** - Admin access to your tenant
 - **Microsoft Entra ID** - Azure account with Business Central admin privileges
 
@@ -191,89 +192,72 @@ Claude Desktop stores its configuration in a JSON file. The location varies by o
 
 ### GitHub Copilot (VS Code) Configuration
 
-GitHub Copilot in VS Code supports MCP servers through settings.
+VS Code reads MCP servers from `mcp.json` files. The quickest way is the **Install in VS Code** button in the [README](README.md#github-copilot-vs-code), which runs the server through `npx`.
 
 **Configuration Steps:**
 
-1. **Open VS Code Settings:**
-   - Press `Ctrl+,` (Windows/Linux) or `Cmd+,` (macOS)
-   - Click the "Open Settings (JSON)" icon in the top-right corner
+1. **Open the configuration:** press `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS) and run **MCP: Open User Configuration** (all workspaces), or create `.vscode/mcp.json` in a workspace.
 
-2. **Add the MCP configuration:**
+2. **Add the server:**
 
    ```json
    {
-     "github.copilot.chat.mcp.servers": {
+     "servers": {
        "d365bc-admin": {
+         "type": "stdio",
          "command": "d365bc-admin-mcp"
        }
      }
    }
    ```
 
-3. **Alternative: Workspace Settings**
+3. **Start it:** click **Start** above the server entry in `mcp.json`, or run **MCP: List Servers** → `d365bc-admin` → **Start Server**.
 
-   Create or edit `.vscode/settings.json` in your workspace:
-
-   ```json
-   {
-     "github.copilot.chat.mcp.servers": {
-       "d365bc-admin": {
-         "command": "d365bc-admin-mcp"
-       }
-     }
-   }
-   ```
-
-4. **Reload VS Code** (`Ctrl+Shift+P` > "Developer: Reload Window")
-
-5. **Verify:** Open GitHub Copilot Chat and try: "List my BC environments"
+4. **Verify:** open Copilot Chat in **Agent** mode and try: "List my BC environments"
 
 ---
 
 ### Cursor Configuration
 
-Cursor uses workspace-specific configuration files for MCP servers.
+Cursor reads MCP servers from `~/.cursor/mcp.json` (all projects) or `.cursor/mcp.json` (one project).
 
 **Configuration Steps:**
 
-1. **Create the config directory in your workspace:**
+1. **Open or create the file**, for example for all projects:
 
-   **Windows (Command Prompt):**
-   ```cmd
-   mkdir .cursor
-   notepad .cursor\config.json
+   **Windows (PowerShell):**
+   ```powershell
+   New-Item -ItemType Directory -Force "$HOME\.cursor" | Out-Null
+   notepad "$HOME\.cursor\mcp.json"
    ```
 
    **macOS/Linux (Terminal):**
    ```bash
-   mkdir -p .cursor
-   nano .cursor/config.json
+   mkdir -p ~/.cursor
+   nano ~/.cursor/mcp.json
    ```
 
 2. **Add the following configuration:**
 
    ```json
    {
-     "mcp": {
-       "servers": {
-         "d365bc-admin": {
-           "command": "d365bc-admin-mcp"
-         }
+     "mcpServers": {
+       "d365bc-admin": {
+         "command": "d365bc-admin-mcp"
        }
      }
    }
    ```
 
-3. **Save the file** and restart Cursor
+3. **Save the file**, then check **Cursor Settings → MCP**: the server should be listed and enabled
 
-4. **Verify:** Open Cursor's AI chat and test the MCP server
+4. **Verify:** Open Cursor's AI chat (Agent) and test the MCP server
 
 ---
 
 ## 🔐 Authentication Setup
 
-The MCP server uses **interactive browser authentication** through Microsoft Entra ID.
+The MCP server authenticates with Microsoft Entra ID. It first uses credentials already available on the machine (Azure CLI, Visual Studio, environment variables, managed identity); otherwise it opens an **interactive browser login**.
 
 **First-Time Setup:**
 
@@ -282,7 +266,7 @@ The MCP server uses **interactive browser authentication** through Microsoft Ent
    "Show me all my Business Central environments"
    ```
 
-2. A browser window will automatically open
+2. A browser window opens (unless you are already signed in with the Azure CLI or Visual Studio)
 
 3. Sign in with your **Microsoft account** that has Business Central admin privileges
 
@@ -364,32 +348,19 @@ npm install -g @demiliani/d365bc-admin-mcp
 sudo npm install -g @demiliani/d365bc-admin-mcp
 ```
 
-### .NET SDK Not Found During Installation
+### "The package @demiliani/d365bc-admin-mcp-… is not installed"
 
-The MCP server requires .NET SDK 10.0 for building. If you see this error:
+The server binary comes from an optional dependency matching your OS and CPU (e.g. `@demiliani/d365bc-admin-mcp-win-x64`). npm skips it when optional dependencies are omitted, so reinstall without `--omit=optional` / `--no-optional`:
 
-**Windows:**
-```powershell
-# Install via winget
-winget install Microsoft.DotNet.SDK.10
-
-# Or download from https://dotnet.microsoft.com/download
-```
-
-**macOS:**
 ```bash
-brew install --cask dotnet-sdk
+npm install -g @demiliani/d365bc-admin-mcp
 ```
 
-**Linux:**
-```bash
-# Ubuntu/Debian
-wget https://dot.net/v1/dotnet-install.sh
-chmod +x dotnet-install.sh
-./dotnet-install.sh --channel 10.0
+Platforms other than Windows, Linux (glibc) and macOS on x64/ARM64 have no prebuilt binary: build from source with the .NET 10 SDK (see [Contributing](README.md#-contributing)).
 
-# Or follow: https://learn.microsoft.com/dotnet/core/install/linux
-```
+### Upgrade Fails with EPERM / EBUSY (Windows)
+
+A running MCP server keeps its executable locked. Close VS Code, Claude Desktop or Cursor (or stop the MCP server) and run the install again.
 
 ### MCP Server Not Appearing in AI Assistant
 
@@ -398,8 +369,9 @@ chmod +x dotnet-install.sh
 3. **Restart the AI assistant completely**
 4. **Check logs:**
    - **Claude Desktop:** Look for logs in the app's console
-   - **VS Code:** Open Output panel > GitHub Copilot Chat
-   - **Cursor:** Check the developer console
+   - **VS Code:** run **MCP: List Servers** → `d365bc-admin` → **Show Output**
+   - **Cursor:** **Cursor Settings → MCP** shows the server status and errors
+5. **More detail:** set the environment variable `D365BC_MCP_LOG_LEVEL` to `Debug` in the server configuration (logs go to stderr)
 
 ### Authentication Issues
 
@@ -407,22 +379,25 @@ chmod +x dotnet-install.sh
 - **Use the correct Microsoft account** associated with Business Central
 - **Check your firewall** - Allow browser authentication
 - **Clear cached token:** Tell the AI assistant: "Clear cached token for tenant [your-tenant-id]"
+- **No login window, or wrong account:** Tell the AI assistant: "Force interactive login for tenant [your-tenant-id]" (`force_interactive_auth` opens the browser and lets you choose the account)
 
 ---
 
 ## 🔄 Updating
 
-To update to the latest version:
+Close your AI assistant (or stop the MCP server) first, then install the latest version:
 
 ```bash
-npm update -g @demiliani/d365bc-admin-mcp
+npm install -g @demiliani/d365bc-admin-mcp@latest
 ```
 
 Check the current version:
 
 ```bash
-npm list -g @demiliani/d365bc-admin-mcp
+d365bc-admin-mcp --version
 ```
+
+See the [release notes](https://github.com/demiliani/D365BCAdminMCP/releases) for what changed.
 
 ---
 
@@ -440,14 +415,13 @@ Don't forget to remove the MCP server configuration from your AI assistant's con
 
 ## 📚 Next Steps
 
-- **[Quick Start Guide](docs/QUICKSTART.md)** - Get started in 5 minutes
-- **[README](README.md)** - Full documentation and usage examples
-- **[Publishing Guide](docs/PUBLISHING.md)** - For contributors
+- **[Quick Start](README.md#-quick-start)** - Get started in 5 minutes
+- **[README](README.md)** - Full documentation, tools and usage examples
+- **[Contributing and releasing](README.md#-contributing)** - For contributors
 
 ---
 
 ## 📮 Support
 
 - **npm Package:** https://www.npmjs.com/package/@demiliani/d365bc-admin-mcp
-- **Issues:** Report problems via GitHub Issues
-- **Version:** 1.0.0
+- **Issues:** Report problems via [GitHub Issues](https://github.com/demiliani/D365BCAdminMCP/issues)

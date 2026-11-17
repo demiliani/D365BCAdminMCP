@@ -20,11 +20,13 @@ A Model Context Protocol (MCP) server that enables AI assistants like Claude Des
 npm install -g @demiliani/d365bc-admin-mcp
 ```
 
+To upgrade, run the same command with `@latest`. Close your AI assistant first (or stop the MCP server): on Windows a running server keeps its executable locked.
+
 The server is also listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as `io.github.demiliani/d365bc-admin-mcp`, so clients that browse the registry (such as VS Code) can find and install it directly.
 
 ### Prerequisites
 
-- **Node.js 16+** - [Download](https://nodejs.org/)
+- **Node.js 18+** - [Download](https://nodejs.org/)
 - **Windows, Linux (glibc) or macOS, on x64 or ARM64** - npm installs only the self-contained server for your platform (about 15 MB, no .NET install needed); elsewhere, build from source
 - **Dynamics 365 Business Central** - Admin access to your tenant
 - **Microsoft Entra ID** - Azure account with BC admin privileges
@@ -60,12 +62,33 @@ After installation, configure your AI assistant to use the MCP server.
 
 ### GitHub Copilot (VS Code)
 
-**Location:** `.vscode/settings.json` in your workspace or global settings
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=d365bc-admin&config=%7B%22type%22%3A%22stdio%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40demiliani%2Fd365bc-admin-mcp%22%5D%7D) [![Install in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Install_Server-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=d365bc-admin&config=%7B%22type%22%3A%22stdio%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40demiliani%2Fd365bc-admin-mcp%22%5D%7D&quality=insiders)
+
+The buttons add the server to your VS Code user configuration and run it through `npx`, so the global npm install is optional.
+
+To configure it by hand, run **MCP: Open User Configuration** from the Command Palette (or create `.vscode/mcp.json` in a workspace) and add:
+
+```json
+{
+  "servers": {
+    "d365bc-admin": {
+      "type": "stdio",
+      "command": "d365bc-admin-mcp"
+    }
+  }
+}
+```
+
+Then start the server from the **Start** link shown above it in `mcp.json` (or **MCP: List Servers**) and use it from Copilot Chat in **Agent** mode.
+
+### Cursor
+
+**Location:** `~/.cursor/mcp.json` (all projects) or `.cursor/mcp.json` in a project
 
 **Configuration:**
 ```json
 {
-  "github.copilot.chat.mcp.servers": {
+  "mcpServers": {
     "d365bc-admin": {
       "command": "d365bc-admin-mcp"
     }
@@ -73,36 +96,7 @@ After installation, configure your AI assistant to use the MCP server.
 }
 ```
 
-**Steps:**
-1. Open VS Code Settings (JSON)
-2. Add the above configuration
-3. Save the file
-4. Restart VS Code
-5. Open GitHub Copilot Chat to start using the MCP server
-
-### Cursor
-
-**Location:** `.cursor/config.json` in your workspace
-
-**Configuration:**
-```json
-{
-  "mcp": {
-    "servers": {
-      "d365bc-admin": {
-        "command": "d365bc-admin-mcp"
-      }
-    }
-  }
-}
-```
-
-**Steps:**
-1. Create `.cursor/config.json` in your workspace root
-2. Add the above configuration
-3. Save the file
-4. Restart Cursor
-5. The MCP server will be available in Cursor's AI chat
+Save the file; the server appears under **Cursor Settings → MCP**, where it can be enabled and restarted.
 
 ## 🔐 Authentication
 
@@ -330,8 +324,18 @@ For detailed installation documentation, see:
 ### "Command not found: d365bc-admin-mcp"
 ```bash
 npm install -g @demiliani/d365bc-admin-mcp
-which d365bc-admin-mcp
+d365bc-admin-mcp --version
+which d365bc-admin-mcp      # macOS / Linux
+where d365bc-admin-mcp      # Windows
 ```
+
+If the command still isn't found, add npm's global folder (`npm prefix -g`) to your `PATH`.
+
+### "is not installed" / missing binary
+The npm package installs the server binary from an optional dependency for your platform (e.g. `@demiliani/d365bc-admin-mcp-win-x64`). Reinstall without `--omit=optional` / `--no-optional`.
+
+### Upgrade fails with EPERM / EBUSY (Windows)
+A running server keeps its executable locked. Close VS Code, Claude Desktop or Cursor (or stop the MCP server), then run `npm install -g @demiliani/d365bc-admin-mcp@latest` again.
 
 ### Authentication Issues
 - Ensure you have Business Central admin privileges
@@ -374,7 +378,7 @@ To release:
 1. Bump the version with `npm version 1.4.0 --no-git-tag-version`: it updates `package.json` and `server.json`, and the csproj reads the version from `package.json`. Merge it to `main`.
 2. Tag the merge commit and push the tag: `git tag v1.4.0 && git push origin v1.4.0`. The workflow refuses tags that don't match `package.json` or that point outside `main`. A tag such as `v1.4.0-beta.1` publishes under the `next` dist-tag.
 3. The workflow runs the tests, builds and smoke-tests each binary on its own OS and CPU, installs the packed packages like a user would, and stages them on npm.
-4. On npmjs.com (each package → **Staged Packages**) approve the six platform packages first and `@demiliani/d365bc-admin-mcp` last, with 2FA. Approving the main package first would briefly leave users without a binary.
+4. On npmjs.com → **Staged Packages**, wait until npm's automated review ("Validating") has finished, then approve the seven packages with 2FA: select them with **Add to batch** to approve them in one step, or approve the six platform packages first and `@demiliani/d365bc-admin-mcp` last. Approving the main package before the platform packages would briefly leave users without a binary.
 5. Review and publish the draft GitHub release, which carries the binaries, their SHA-256 checksums and build provenance attestations. Publishing it runs [`publish-mcp-registry.yml`](.github/workflows/publish-mcp-registry.yml), which publishes `server.json` to the MCP Registry, logging in with GitHub OIDC (no secret). The registry checks that the npm version is live, so do this after step 4; if you didn't, re-run that workflow once the packages are approved. Prereleases are not sent to the registry.
 
 One-time setup:
@@ -383,7 +387,7 @@ One-time setup:
 - **GitHub** → **Settings** → **Rules** → add a tag ruleset for `v*` so only maintainers can create, update or delete release tags.
 - **GitHub** → **Settings** → **Code security** → enable **Private vulnerability reporting** (used by [SECURITY.md](SECURITY.md)).
 - **npmjs.com**, for each of the seven packages → **Settings** → **Trusted Publisher** → **GitHub Actions**: organization or user `demiliani`, repository `D365BCAdminMCP`, workflow filename `release.yml`, environment `npm-publish`, allowed action **stage publish**. npm expects the first publish through a new trusted publisher within 2 days of creating it.
-- After the first release goes through, set **Publishing access** to *Require two-factor authentication and disallow tokens* on every package, and revoke any old automation tokens.
+- After the first release goes through, set **Publishing access** to *Require two-factor authentication and disallow bypass 2fa tokens* on every package, and revoke any old automation tokens.
 
 First release with platform packages: npm only lets you configure a trusted publisher on a package that already exists, so the six platform packages are published by hand once:
 
@@ -399,8 +403,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📮 Support
 
 - **npm Package:** https://www.npmjs.com/package/@demiliani/d365bc-admin-mcp
-- **Issues:** Report bugs or request features via GitHub Issues
-- **Version:** 1.2.0
+- **Issues:** Report bugs or request features via [GitHub Issues](https://github.com/demiliani/D365BCAdminMCP/issues)
+- **Releases and changelog:** [GitHub Releases](https://github.com/demiliani/D365BCAdminMCP/releases)
 
 ## 🙏 Acknowledgments
 

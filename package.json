@@ -35,7 +35,7 @@
     "version": "node scripts/sync-server-json.js && git add server.json"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   },
   "os": [
     "darwin",
