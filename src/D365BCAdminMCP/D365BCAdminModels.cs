@@ -512,6 +512,13 @@ public class InstalledApp
     
     [JsonPropertyName("canBeUninstalled")]
     public bool? CanBeUninstalled { get; set; }
+
+    // The API documentation names the identifier "appId" while existing responses were mapped from "id"; accept both.
+    [JsonPropertyName("appId")]
+    public Guid? AppId { get; set; }
+
+    [JsonIgnore]
+    public Guid? EffectiveId => Id ?? AppId;
 }
 
 public class InstalledAppsResponse
@@ -1019,5 +1026,231 @@ public class PteUploadResult
 [JsonSerializable(typeof(PteUploadResult))]
 internal sealed partial class PteUploadResultContext : JsonSerializerContext {
 
+}
+
+/// <summary>
+/// Operation returned by the Admin Center API PTE endpoints (pteInstall, scheduledPteOperations, removeScheduledPteVersion), API v2.29+
+/// </summary>
+public class PteOperation
+{
+    [JsonPropertyName("id")]
+    public Guid? Id { get; set; }
+
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+
+    [JsonPropertyName("sourceAppVersion")]
+    public string? SourceAppVersion { get; set; }
+
+    [JsonPropertyName("targetAppVersion")]
+    public string? TargetAppVersion { get; set; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+
+    [JsonPropertyName("createdOn")]
+    public DateTime? CreatedOn { get; set; }
+
+    [JsonPropertyName("startedOn")]
+    public DateTime? StartedOn { get; set; }
+
+    [JsonPropertyName("completedOn")]
+    public DateTime? CompletedOn { get; set; }
+
+    [JsonPropertyName("errorMessage")]
+    public string? ErrorMessage { get; set; }
+
+    [JsonPropertyName("createdBy")]
+    public string? CreatedBy { get; set; }
+
+    [JsonPropertyName("canceledBy")]
+    public string? CanceledBy { get; set; }
+
+    [JsonPropertyName("creatorPrincipalType")]
+    public string? CreatorPrincipalType { get; set; }
+
+    [JsonPropertyName("appId")]
+    public Guid? AppId { get; set; }
+
+    [JsonPropertyName("aadTenantId")]
+    public Guid? AadTenantId { get; set; }
+
+    [JsonPropertyName("scheduleKind")]
+    public string? ScheduleKind { get; set; }
+
+    [JsonPropertyName("parameters")]
+    public ScheduledPteParameters? Parameters { get; set; }
+}
+
+public class ScheduledPteParameters
+{
+    [JsonPropertyName("appId")]
+    public Guid? AppId { get; set; }
+
+    [JsonPropertyName("targetAppVersion")]
+    public string? TargetAppVersion { get; set; }
+
+    [JsonPropertyName("countryCode")]
+    public string? CountryCode { get; set; }
+
+    [JsonPropertyName("languageId")]
+    public string? LanguageId { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("publisher")]
+    public string? Publisher { get; set; }
+
+    [JsonPropertyName("scheduleKind")]
+    public string? ScheduleKind { get; set; }
+
+    [JsonPropertyName("targetRelease")]
+    public string? TargetRelease { get; set; }
+
+    [JsonPropertyName("syncMode")]
+    public string? SyncMode { get; set; }
+}
+
+public class ScheduledPteOperationsResponse
+{
+    [JsonPropertyName("value")]
+    public List<PteOperation>? Value { get; set; }
+}
+
+public class RemoveScheduledPteVersionRequest
+{
+    [JsonPropertyName("targetVersion")]
+    public string TargetVersion { get; set; } = string.Empty;
+
+    [JsonPropertyName("scheduleKind")]
+    public string ScheduleKind { get; set; } = string.Empty;
+}
+
+public class PteInstallOptions
+{
+    public string DeploymentSchedule { get; set; } = "Immediate";
+    public string SyncMode { get; set; } = "Add";
+    public string? LanguageId { get; set; }
+    public bool AcceptIsvEula { get; set; } = true;
+    public bool InstallOrUpdateNeededDependencies { get; set; }
+}
+
+public class PteInstallOutcome
+{
+    [JsonPropertyName("file")]
+    public string File { get; set; } = string.Empty;
+
+    [JsonPropertyName("appId")]
+    public Guid? AppId { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("version")]
+    public string? Version { get; set; }
+
+    // succeeded, failed, canceled, skipped, scheduled, running, timeout
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+
+    [JsonPropertyName("operationId")]
+    public Guid? OperationId { get; set; }
+
+    [JsonPropertyName("scheduleKind")]
+    public string? ScheduleKind { get; set; }
+
+    [JsonPropertyName("completedOn")]
+    public DateTime? CompletedOn { get; set; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; set; }
+
+    public static PteInstallOutcome FromOperation(string filePath, PteAppInfo? appInfo, PteOperation operation) => new()
+    {
+        File = Path.GetFileName(filePath),
+        AppId = operation.AppId ?? appInfo?.Id,
+        Name = appInfo?.Name,
+        Version = operation.TargetAppVersion ?? appInfo?.Version,
+        Status = operation.Status?.ToLowerInvariant(),
+        OperationId = operation.Id,
+        ScheduleKind = operation.ScheduleKind,
+        CompletedOn = operation.CompletedOn,
+        Error = string.IsNullOrWhiteSpace(operation.ErrorMessage) ? null : operation.ErrorMessage
+    };
+
+    public static PteInstallOutcome Failed(string filePath, PteAppInfo? appInfo, Guid? operationId, string? error) => new()
+    {
+        File = Path.GetFileName(filePath),
+        AppId = appInfo?.Id,
+        Name = appInfo?.Name,
+        Version = appInfo?.Version,
+        Status = "failed",
+        OperationId = operationId,
+        Error = error
+    };
+
+    public static PteInstallOutcome Skipped(PteAppInfo appInfo, string reason) => new()
+    {
+        File = Path.GetFileName(appInfo.FilePath),
+        AppId = appInfo.Id,
+        Name = appInfo.Name,
+        Version = appInfo.Version,
+        Status = "skipped",
+        Error = reason
+    };
+}
+
+public class ExternalDependencyOutcome
+{
+    [JsonPropertyName("appId")]
+    public Guid AppId { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("publisher")]
+    public string? Publisher { get; set; }
+
+    [JsonPropertyName("requiredVersion")]
+    public string? RequiredVersion { get; set; }
+
+    [JsonPropertyName("installedVersion")]
+    public string? InstalledVersion { get; set; }
+
+    // none, install, update
+    [JsonPropertyName("action")]
+    public string Action { get; set; } = "none";
+
+    // satisfied, missing, outdated, installed, updated, failed
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "satisfied";
+
+    [JsonPropertyName("operationId")]
+    public Guid? OperationId { get; set; }
+
+    [JsonPropertyName("requiredBy")]
+    public List<string> RequiredBy { get; set; } = new();
+
+    [JsonPropertyName("error")]
+    public string? Error { get; set; }
+
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
+}
+
+public class ExternalDependencyResult
+{
+    public List<ExternalDependencyOutcome> Dependencies { get; set; } = new();
+    public HashSet<Guid> FailedDependencyIds { get; set; } = new();
+    public string? FatalError { get; set; }
+}
+
+public class PteApiResult<T>
+{
+    public T? Value { get; set; }
+    public int? StatusCode { get; set; }
+    public string? Error { get; set; }
+    public bool Success => Value != null && Error == null;
 }
 
