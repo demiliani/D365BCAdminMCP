@@ -10,7 +10,13 @@
     <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-    <Version>1.3.0</Version>
+    <PublishTrimmed>true</PublishTrimmed>
+    <!-- Tools are discovered and their results serialized through reflection, so the server's own assembly is kept whole
+         (TrimmerRootAssembly below) and the IL2026 warnings for those calls do not apply. -->
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
+    <NoWarn>$(NoWarn);IL2026</NoWarn>
+    <!-- package.json is the single source of the version (npm version, release tags). -->
+    <Version>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../../package.json')), '(?&lt;="version"\s*:\s*")[^"]+').Value)</Version>
     <PackageId>D365BCAdminMCP</PackageId>
     <Title>Dynamics 365 Business Central Admin MCP Server</Title>
     <Authors>Stefano Demiliani</Authors>
@@ -33,6 +39,10 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="D365BCAdminMCP.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <TrimmerRootAssembly Include="D365BCAdminMCP" />
   </ItemGroup>
 
 </Project>

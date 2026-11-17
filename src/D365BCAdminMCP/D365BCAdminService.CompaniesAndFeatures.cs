@@ -32,8 +32,9 @@ public partial class D365BCAdminService
 
         if (result.Success)
         {
-            return JsonSerializer.Serialize(new { 
-                success = true, 
+            return JsonSerializer.Serialize(new
+            {
+                success = true,
                 message = $"Feature {featureId} activation initiated successfully",
                 featureId = featureId,
                 updateInBackground = updateInBackground,
@@ -41,8 +42,9 @@ public partial class D365BCAdminService
             });
         }
 
-        return JsonSerializer.Serialize(new { 
-            success = false, 
+        return JsonSerializer.Serialize(new
+        {
+            success = false,
             error = result.Error
         });
     }
@@ -60,15 +62,17 @@ public partial class D365BCAdminService
 
         if (result.Success)
         {
-            return JsonSerializer.Serialize(new { 
-                success = true, 
+            return JsonSerializer.Serialize(new
+            {
+                success = true,
                 message = $"Feature {featureId} deactivation initiated successfully",
                 featureId = featureId
             });
         }
 
-        return JsonSerializer.Serialize(new { 
-            success = false, 
+        return JsonSerializer.Serialize(new
+        {
+            success = false,
             error = result.Error
         });
     }

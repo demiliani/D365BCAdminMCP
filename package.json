@@ -26,11 +26,7 @@
   },
   "files": [
     "bin/",
-    "build/win-x64/D365BCAdminMCP.exe",
-    "build/linux-x64/D365BCAdminMCP",
-    "build/osx-arm64/D365BCAdminMCP",
-    "README.md",
-    "LICENSE"
+    "lib/"
   ],
   "scripts": {
     "build": "node scripts/check-dotnet.js && node scripts/build-dotnet.js",
