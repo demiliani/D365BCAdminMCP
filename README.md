@@ -347,7 +347,7 @@ When an Admin Center API call fails, tools return the API error instead of a gen
 
 Contributions are welcome! Please feel free to submit issues, feature requests, or pull requests.
 
-Build and run the tests (the same steps run in CI on every pull request):
+Building from source requires the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) (pinned in `global.json`). Build and run the tests (the same steps run in CI on every pull request):
 
 ```bash
 dotnet build src/D365BCAdminMCP.sln

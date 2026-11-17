@@ -13,16 +13,15 @@ try {
   
   console.log(`✅ .NET SDK ${version} found`);
   
-  // Check if it's at least .NET 6.0
   const majorVersion = parseInt(version.split('.')[0]);
-  if (majorVersion < 6) {
-    console.warn('⚠️  Warning: .NET SDK 6.0 or higher is recommended.');
+  if (majorVersion < 10) {
+    console.warn('⚠️  Warning: building from source requires .NET SDK 10.0 or higher.');
     console.warn('   Current version:', version);
   }
 } catch (error) {
   console.error('❌ .NET SDK not found!');
   console.error('');
-  console.error('The D365BC Admin MCP Server requires .NET SDK 9.0 or higher to build.');
+  console.error('The D365BC Admin MCP Server requires .NET SDK 10.0 or higher to build.');
   console.error('');
   console.error('Please install .NET SDK from:');
   console.error('  https://dotnet.microsoft.com/download');
