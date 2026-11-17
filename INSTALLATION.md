@@ -288,7 +288,7 @@ The MCP server uses **interactive browser authentication** through Microsoft Ent
 
 4. Grant the requested permissions
 
-5. The token is cached for **50 minutes** and automatically refreshed
+5. The sign-in is remembered across restarts through the operating system's encrypted token cache, so the browser opens again only when the refresh token expires (see [Authentication](README.md#-authentication))
 
 **No additional configuration needed!** The MCP server handles authentication automatically.
 
