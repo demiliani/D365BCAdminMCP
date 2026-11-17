@@ -29,15 +29,12 @@
     "build/win-x64/D365BCAdminMCP.exe",
     "build/linux-x64/D365BCAdminMCP",
     "build/osx-arm64/D365BCAdminMCP",
-    "scripts/build-dotnet.js",
-    "scripts/check-dotnet.js",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "postinstall": "node scripts/build-dotnet.js || echo 'Warning: Build skipped. Using pre-built binaries.'",
-    "build": "node scripts/build-dotnet.js",
-    "test": "node bin/d365bc-admin-mcp.js --version"
+    "build": "node scripts/check-dotnet.js && node scripts/build-dotnet.js",
+    "test": "node scripts/smoke-test.js"
   },
   "engines": {
     "node": ">=16.0.0"
