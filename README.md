@@ -20,6 +20,8 @@ A Model Context Protocol (MCP) server that enables AI assistants like Claude Des
 npm install -g @demiliani/d365bc-admin-mcp
 ```
 
+The server is also listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as `io.github.demiliani/d365bc-admin-mcp`, so clients that browse the registry (such as VS Code) can find and install it directly.
+
 ### Prerequisites
 
 - **Node.js 16+** - [Download](https://nodejs.org/)
@@ -365,11 +367,11 @@ Each release is seven npm packages: `@demiliani/d365bc-admin-mcp` (the launcher)
 
 To release:
 
-1. Bump the version in `package.json` (the csproj reads it from there), e.g. `npm version 1.4.0 --no-git-tag-version`, and merge it to `main`.
+1. Bump the version with `npm version 1.4.0 --no-git-tag-version`: it updates `package.json` and `server.json`, and the csproj reads the version from `package.json`. Merge it to `main`.
 2. Tag the merge commit and push the tag: `git tag v1.4.0 && git push origin v1.4.0`. The workflow refuses tags that don't match `package.json` or that point outside `main`. A tag such as `v1.4.0-beta.1` publishes under the `next` dist-tag.
 3. The workflow runs the tests, builds and smoke-tests each binary on its own OS and CPU, installs the packed packages like a user would, and stages them on npm.
 4. On npmjs.com (each package → **Staged Packages**) approve the six platform packages first and `@demiliani/d365bc-admin-mcp` last, with 2FA. Approving the main package first would briefly leave users without a binary.
-5. Review and publish the draft GitHub release, which carries the binaries, their SHA-256 checksums and build provenance attestations.
+5. Review and publish the draft GitHub release, which carries the binaries, their SHA-256 checksums and build provenance attestations. Publishing it runs [`publish-mcp-registry.yml`](.github/workflows/publish-mcp-registry.yml), which publishes `server.json` to the MCP Registry, logging in with GitHub OIDC (no secret). The registry checks that the npm version is live, so do this after step 4; if you didn't, re-run that workflow once the packages are approved. Prereleases are not sent to the registry.
 
 One-time setup:
 
