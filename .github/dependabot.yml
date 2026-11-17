@@ -7,6 +7,12 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # The server targets .NET 10 (LTS): keep the runtime libraries on 10.x and move them
+    # to a new major version together with the target framework.
+    ignore:
+      - dependency-name: Microsoft.Extensions.*
+        update-types:
+          - version-update:semver-major
     groups:
       test-packages:
         patterns:
