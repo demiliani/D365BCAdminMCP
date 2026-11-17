@@ -12,16 +12,16 @@ class Program
     {
         // Set up process exit handlers for clean shutdown
         var processId = System.Diagnostics.Process.GetCurrentProcess().Id;
-        Console.WriteLine($"🚀 [DEBUG] D365BCAdminMCP starting (PID: {processId})");
+        Log.Info($"D365BCAdminMCP starting (PID: {processId})");
         
         AppDomain.CurrentDomain.ProcessExit += (s, e) =>
         {
-            Console.Error.WriteLine($"🔴 [DEBUG] Process exiting gracefully (PID: {processId})");
+            Log.Debug($"Process exiting gracefully (PID: {processId})");
         };
 
         Console.CancelKeyPress += (s, e) =>
         {
-            Console.Error.WriteLine($"🔴 [DEBUG] Ctrl+C received, shutting down (PID: {processId})");
+            Log.Info($"Ctrl+C received, shutting down (PID: {processId})");
         };
 
         var builder = Host.CreateEmptyApplicationBuilder(settings: null);
@@ -36,11 +36,9 @@ class Program
             .WithStdioServerTransport()
             .WithToolsFromAssembly();
 
-        builder.Services.AddSingleton<D365BCAdminService>();
-
         await builder.Build().RunAsync();
         
-        Console.Error.WriteLine($"✅ [DEBUG] D365BCAdminMCP stopped cleanly (PID: {processId})");
+        Log.Info($"D365BCAdminMCP stopped cleanly (PID: {processId})");
     }
 }
 

@@ -1246,11 +1246,16 @@ public class ExternalDependencyResult
     public string? FatalError { get; set; }
 }
 
-public class PteApiResult<T>
+public class ApiResult<T>
 {
     public T? Value { get; set; }
     public int? StatusCode { get; set; }
     public string? Error { get; set; }
+    public string? ErrorBody { get; set; }
     public bool Success => Value != null && Error == null;
+
+    public ApiResult<TOut> Map<TOut>(Func<T, TOut> map) => Success
+        ? new ApiResult<TOut> { StatusCode = StatusCode, Value = map(Value!) }
+        : new ApiResult<TOut> { StatusCode = StatusCode, Error = Error ?? "Empty response from the Business Central API", ErrorBody = ErrorBody };
 }
 
