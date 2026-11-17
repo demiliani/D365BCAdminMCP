@@ -5,7 +5,7 @@ A Model Context Protocol (MCP) server that enables AI assistants like Claude Des
 ## 🌟 Features
 
 - 🔐 **Interactive Authentication** - Secure Microsoft Entra ID authentication with browser-based login
-- 📦 **38 Administrative Tools** - Complete environment, app, session, PTE upload, and extension management
+- 📦 **52 Administrative Tools** - Complete environment, app, session, PTE upload, and extension management
 - ⚡ **Smart Token Caching** - Automatic token refresh to minimize authentication prompts
 - 🌍 **Multi-Tenant Support** - Manage multiple Business Central tenants seamlessly
 - 💬 **Natural Language Interface** - Control BC through conversational AI commands
@@ -110,6 +110,8 @@ The server first tries the credentials already available on the machine (Azure C
 
 The sign-in is kept across restarts: refresh tokens are stored in the operating system's encrypted token cache (Windows DPAPI, macOS Keychain, Linux keyring) and the account is remembered in `%LOCALAPPDATA%/D365BCAdminMCP` (`~/Library/Application Support/D365BCAdminMCP` on macOS, `~/.local/share/D365BCAdminMCP` on Linux), so the browser opens again only when the refresh token expires. Where no encrypted store is available (e.g. Linux without a keyring), the login is kept in memory only. Set `D365BC_MCP_PERSIST_TOKEN_CACHE=false` to disable persistence; `clear_cached_token` signs out of a tenant.
 
+If the browser window does not launch automatically, run the MCP tool `force_interactive_auth` (e.g., ask your assistant: "Force interactive login for tenant `00000000-0000-0000-0000-000000000000`"). It skips Azure CLI / Visual Studio credentials and the saved sign-in, opens the Microsoft login dialog for the specified tenant and lets you choose a different account (useful when the machine is signed in with a user that has no access to that tenant).
+
 **No additional setup required** - the MCP server handles authentication automatically!
 
 ## 💡 Usage Examples
@@ -166,15 +168,16 @@ Once configured, use natural language commands in your AI assistant:
 "Check the extension deployment status for Fabrikam in Production"
 ```
 
-## 🛠️ Available Tools (51 Total)
+## 🛠️ Available Tools (52 Total)
 
-The MCP server exposes 51 administrative tools organized by category:
+The MCP server exposes 52 administrative tools organized by category:
 
-### 🔑 Authentication & Tenant Management (2 tools)
+### 🔑 Authentication & Tenant Management (3 tools)
 
 | Tool | Description |
 |------|-------------|
 | `get_microsoft_entra_id_token` | Sign in to a tenant and cache the token used by the other tools (returns status and expiry, never the token) |
+| `force_interactive_auth` | Force browser-based login and refresh the cached token for a tenant |
 | `get_tenant_id_from_tenant_name` | Retrieve tenant ID from tenant name |
 
 ### 🌍 Environment Management (16 tools)
@@ -334,6 +337,7 @@ which d365bc-admin-mcp
 - Ensure you have Business Central admin privileges
 - Check that you're signing in with the correct Microsoft account
 - Try clearing the token cache: "Clear cached token for tenant [tenant-id]"
+- If the login prompt never appears, or you are signed in with the wrong account, ask: "Force interactive login for tenant [tenant-id]" (`force_interactive_auth` opens the browser immediately and lets you pick the account)
 
 ### MCP Server Not Appearing
 - Verify the config file location for your OS

@@ -28,7 +28,7 @@ public class ToolAnnotationTests
     [Fact]
     public void AllToolsAreRegistered()
     {
-        Assert.Equal(51, Tools.Count);
+        Assert.Equal(52, Tools.Count);
     }
 
     [Fact]
